@@ -5,7 +5,7 @@ require_once __DIR__ . '/auth.php';
 analyzerRequireLogin();
 
 try {
-    require __DIR__ . '/antibot-analyzer.php';
+    require __DIR__ . '/antibot-analyzer-v2-wrapper.php';
 } catch (Throwable $e) {
     http_response_code(500);
     ?>
