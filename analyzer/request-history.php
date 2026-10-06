@@ -22,11 +22,30 @@ if (!is_readable($log)) {
     exit;
 }
 
-/*
- * Keep only the last HISTORY_LIMIT matching events while scanning the whole log.
- * This avoids returning the oldest 250 events from a growing production log.
- */
 const HISTORY_LIMIT = 250;
+
+function parseLogLine(string $line): ?array {
+    if (!preg_match('/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+)\s*(.*)$/u', rtrim($line, "\r\n"), $m)) {
+        return null;
+    }
+    return ['time'=>$m[1], 'ray'=>$m[2], 'ip'=>$m[3], 'message'=>trim($m[4])];
+}
+
+function eventKind(string $msg): string {
+    if ($msg !== '' && $msg[0] === '/') return 'request';
+    if (str_starts_with($msg, 'REF:')) return 'referrer';
+    if (str_starts_with($msg, 'PTR:')) return 'ptr';
+    if (str_starts_with($msg, 'UA:')) return 'ua';
+    if (stripos($msg, 'captcha') !== false) return 'captcha';
+    if (stripos($msg, 'blocked') !== false || stripos($msg, 'blocking page') !== false) return 'block';
+    return 'event';
+}
+
+function pushLatest(array &$events, array $event): void {
+    if (count($events) >= HISTORY_LIMIT) array_shift($events);
+    $events[] = $event;
+}
+
 $events = [];
 $ips = [];
 $urls = [];
@@ -39,78 +58,74 @@ if ($fh === false) {
     exit;
 }
 
-while (($line = fgets($fh)) !== false) {
-    if (!preg_match('/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+)\s*(.*)$/u', rtrim($line, "\r\n"), $m)) {
-        continue;
+if ($type === 'ip') {
+    // Fast path: only lines belonging to the requested IP are relevant.
+    while (($line = fgets($fh)) !== false) {
+        $row = parseLogLine($line);
+        if ($row === null || $row['ip'] !== $value) continue;
+
+        $sessions[$row['ray']] = true;
+        $kind = eventKind($row['message']);
+        if ($kind === 'request') $urls[$row['message']] = true;
+        $row['kind'] = $kind;
+        pushLatest($events, $row);
     }
-
-    $msg = trim($m[4]);
-    $match = false;
-
-    if ($type === 'ip') {
-        $match = $m[3] === $value;
-    } else {
-        $match = (bool)preg_match('/\bFP:\s*' . preg_quote($value, '/') . '\b/i', $msg);
+} else {
+    /*
+     * Fingerprint history must contain the whole RayID/session, not only the
+     * single "FP: ..." line. First collect every RayID where this fingerprint
+     * appears, then return all events belonging to those sessions.
+     */
+    $matchingRays = [];
+    while (($line = fgets($fh)) !== false) {
+        $row = parseLogLine($line);
+        if ($row === null) continue;
+        if (preg_match('/\bFP:\s*' . preg_quote($value, '/') . '\b/i', $row['message'])) {
+            $matchingRays[$row['ray']] = true;
+        }
     }
+    fclose($fh);
 
-    if (!$match) {
-        continue;
+    if ($matchingRays) {
+        $fh = fopen($log, 'rb');
+        if ($fh !== false) {
+            while (($line = fgets($fh)) !== false) {
+                $row = parseLogLine($line);
+                if ($row === null || !isset($matchingRays[$row['ray']])) continue;
+
+                $sessions[$row['ray']] = true;
+                $ips[$row['ip']] = true;
+                $kind = eventKind($row['message']);
+                if ($kind === 'request') $urls[$row['message']] = true;
+                $row['kind'] = $kind;
+                pushLatest($events, $row);
+            }
+            fclose($fh);
+        }
     }
-
-    $kind = 'event';
-    if ($msg !== '' && $msg[0] === '/') {
-        $kind = 'request';
-        $urls[$msg] = true;
-    } elseif (str_starts_with($msg, 'REF:')) {
-        $kind = 'referrer';
-    } elseif (str_starts_with($msg, 'PTR:')) {
-        $kind = 'ptr';
-    } elseif (str_starts_with($msg, 'UA:')) {
-        $kind = 'ua';
-    } elseif (stripos($msg, 'captcha') !== false) {
-        $kind = 'captcha';
-    } elseif (stripos($msg, 'blocked') !== false || stripos($msg, 'blocking page') !== false) {
-        $kind = 'block';
-    }
-
-    $event = [
-        'time' => $m[1],
-        'ray' => $m[2],
-        'ip' => $m[3],
-        'kind' => $kind,
-        'message' => $msg,
-    ];
-
-    $sessions[$m[2]] = true;
-    $ips[$m[3]] = true;
-
-    if (count($events) >= HISTORY_LIMIT) {
-        array_shift($events);
-    }
-    $events[] = $event;
 }
 
-fclose($fh);
+if (is_resource($fh)) fclose($fh);
 
-/* The ring buffer above is chronological already; sort defensively in case the log is not perfectly ordered. */
 usort($events, static fn(array $a, array $b): int => strcmp($a['time'], $b['time']) ?: strcmp($a['ray'], $b['ray']));
 
-/* URLs are intentionally collected from the returned window only. */
 foreach ($events as $event) {
-    if ($event['kind'] === 'request') {
-        $urls[$event['message']] = true;
-    }
+    $ips[$event['ip']] = true;
+    $sessions[$event['ray']] = true;
+    if ($event['kind'] === 'request') $urls[$event['message']] = true;
 }
 
 $urls = array_keys($urls);
 sort($urls, SORT_STRING);
 
-// Keep the response compact and deterministic.
+$ipList = array_keys($ips);
+sort($ipList, SORT_STRING);
+
 echo json_encode([
     'ok' => true,
     'events' => $events,
     'sessions' => count($sessions),
-    'ips' => array_keys($ips),
+    'ips' => $ipList,
     'urls' => $urls,
     'truncated' => count($events) >= HISTORY_LIMIT,
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
