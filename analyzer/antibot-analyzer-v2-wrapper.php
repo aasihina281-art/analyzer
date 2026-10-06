@@ -1,48 +1,10 @@
 <?php
 declare(strict_types=1);
 
-/* Keep the existing Analyzer backend and visual design; add request history and a server-rendered analytical risk summary. */
+/* Keep the existing Analyzer backend and visual design; add request history and analytical risk signals. */
 ob_start();
 require __DIR__ . '/antibot-analyzer.php';
 $html = ob_get_clean();
-
-/* Render the risk panel on the server so it is present in the HTML and does not depend on browser fetch/JS. */
-$riskPanel = '';
-try {
-    ob_start();
-    require __DIR__ . '/risk-summary.php';
-    $riskJson = ob_get_clean();
-    $riskData = json_decode($riskJson, true);
-    if (is_array($riskData) && !empty($riskData['ok'])) {
-        $items = is_array($riskData['items'] ?? null) ? array_slice($riskData['items'], 0, 12) : [];
-        $esc = static fn($v): string => htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
-        $riskPanel = '<section class="risk-summary">';
-        $riskPanel .= '<div class="risk-summary-head"><div><div class="risk-summary-title">Подозрительные Fingerprint</div><div class="risk-summary-note">Аналитический score 0–100. Ничего автоматически не блокирует.</div></div><div class="risk-summary-note">' . count($items) . ' наиболее подозрительных</div></div>';
-        if (!$items) {
-            $riskPanel .= '<div class="risk-summary-note">Недостаточно данных для расчёта.</div>';
-        } else {
-            $riskPanel .= '<div class="risk-grid">';
-            foreach ($items as $x) {
-                $level = strtolower((string)($x['level'] ?? 'low'));
-                $score = (int)($x['score'] ?? 0);
-                $reasons = is_array($x['reasons'] ?? null) ? array_slice($x['reasons'], 0, 4) : [];
-                $riskPanel .= '<div class="risk-item"><div class="risk-item-top"><span class="risk-score ' . $esc($level) . '">' . $score . '/100</span><span class="risk-level">' . $esc(strtoupper($level)) . '</span></div>';
-                $riskPanel .= '<div class="risk-value">' . $esc($x['value'] ?? '') . '</div>';
-                $riskPanel .= '<div class="risk-meta">' . (int)($x['ipCount'] ?? 0) . ' IP · ' . (int)($x['sessions'] ?? 0) . ' сессий · ' . (int)($x['requests'] ?? 0) . ' запросов<br>' . (int)($x['captchaShown'] ?? 0) . ' CAPTCHA · ' . (int)($x['captchaPassed'] ?? 0) . ' passed · ' . (int)($x['blocked'] ?? 0) . ' блокировок · ' . (int)($x['urlCount'] ?? 0) . ' URL</div>';
-                if ($reasons) {
-                    $riskPanel .= '<ul class="risk-reasons">';
-                    foreach ($reasons as $reason) $riskPanel .= '<li>' . $esc($reason) . '</li>';
-                    $riskPanel .= '</ul>';
-                }
-                $riskPanel .= '</div>';
-            }
-            $riskPanel .= '</div>';
-        }
-        $riskPanel .= '<div class="risk-legend">LOW &lt; 40 · MEDIUM 40–69 · HIGH 70+. Это сигнал для расследования, а не доказательство вредоносности.</div></section>';
-    }
-} catch (Throwable $e) {
-    /* Risk is optional; never break the existing Analyzer if its summary fails. */
-}
 
 $extra = <<<'HTML'
 <style>
@@ -79,30 +41,23 @@ function makeHistory(value,type,anchor){
    }catch(e){panel.innerHTML='<div class="history-error">Не удалось загрузить историю: '+esc(e.message)+'</div>'}
  });
 }
-function initHistory(){
- document.querySelectorAll('.entity-card').forEach(card=>{
-   const valueEl=card.querySelector('.entity-value'),typeEl=card.querySelector('.entity-type');
-   if(valueEl&&typeEl)makeHistory(valueEl.textContent.trim(),/Fingerprint/i.test(typeEl.textContent)?'fingerprint':'ip',valueEl);
- });
+function renderRisk(items){
+ const old=document.querySelector('.risk-summary');if(old)old.remove();
+ const panel=document.createElement('section');panel.className='risk-summary';
+ let html='<div class="risk-summary-head"><div><div class="risk-summary-title">Подозрительные Fingerprint</div><div class="risk-summary-note">Аналитический score 0–100. Ничего автоматически не блокирует.</div></div><div class="risk-summary-note">'+items.length+' наиболее подозрительных</div></div>';
+ if(!items.length)html+='<div class="risk-summary-note">Недостаточно данных для расчёта.</div>';
+ else{html+='<div class="risk-grid">';items.slice(0,12).forEach(x=>{html+='<div class="risk-item"><div class="risk-item-top"><span class="risk-score '+x.level.toLowerCase()+'">'+x.score+'/100</span><span class="risk-level">'+esc(x.level)+'</span></div><div class="risk-value">'+esc(x.value)+'</div><div class="risk-meta">'+x.ipCount+' IP · '+x.sessions+' сессий · '+x.requests+' запросов<br>'+x.captchaShown+' CAPTCHA · '+x.captchaPassed+' passed · '+x.blocked+' блокировок · '+x.urlCount+' URL</div><ul class="risk-reasons">'+x.reasons.slice(0,4).map(r=>'<li>'+esc(r)+'</li>').join('')+'</ul></div>'});html+='</div>';}
+ html+='<div class="risk-legend">LOW &lt; 40 · MEDIUM 40–69 · HIGH 70+. Это сигнал для расследования, а не доказательство вредоносности.</div>';panel.innerHTML=html;
+ const grid=document.querySelector('.grid');if(grid)grid.insertAdjacentElement('afterend',panel);
 }
-function init(){initHistory();}
+async function initRisk(){try{const r=await fetch('risk-summary.php',{credentials:'same-origin',cache:'no-store'});const d=await r.json();if(d.ok)renderRisk(d.items||[])}catch(_){}}
+function initHistory(){document.querySelectorAll('.entity-card').forEach(card=>{const valueEl=card.querySelector('.entity-value'),typeEl=card.querySelector('.entity-type');if(valueEl&&typeEl)makeHistory(valueEl.textContent.trim(),/Fingerprint/i.test(typeEl.textContent)?'fingerprint':'ip',valueEl)})}
+function init(){initHistory();initRisk()}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 document.addEventListener('click',e=>{const b=e.target.closest('[data-history-copy]');if(!b)return;const v=b.getAttribute('data-history-copy')||'';copy(v);const old=b.textContent;b.textContent='✓ Скопировано';setTimeout(()=>b.textContent=old,900)});
 })();
 </script>
 HTML;
-
-if ($riskPanel !== '') {
-    $marker = '<div class="grid">';
-    $pos = strpos($html, $marker);
-    if ($pos !== false) {
-        $end = strpos($html, '</div>', $pos);
-        if ($end !== false) {
-            $end += 6;
-            $html = substr($html, 0, $end) . $riskPanel . substr($html, $end);
-        }
-    }
-}
 
 $html = str_replace('</head>', $extra . '</head>', $html);
 echo $html;
