@@ -29,6 +29,11 @@ analyzerRequireLogin();
 require_once __DIR__ . '/includes/parser.php';
 require_once __DIR__ . '/includes/risk.php';
 require_once __DIR__ . '/includes/cache.php';
+require_once __DIR__ . '/includes/pf-detector.php';
+
+/* Версия схемы кэшируемых данных. При изменении структуры сущностей /
+ * кампаний / графиков нужно увеличить — старый кэш будет инвалидирован. */
+const ANALYZER_SCHEMA_VERSION = 3;
 
 /* ------------------------------------------------------------------ *
  * Blocking actions (unchanged security model)
@@ -274,7 +279,7 @@ $timeFrom   = isset($_GET['from']) ? trim((string)$_GET['from']) : '';
 $timeTo     = isset($_GET['to']) ? trim((string)$_GET['to']) : '';
 $searchTerm = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
 $view       = (string)($_GET['view'] ?? 'risk');
-if (!in_array($view, ['risk', 'blocked', 'pending', 'passed', 'robots', 'all'], true)) $view = 'risk';
+if (!in_array($view, ['risk', 'pf', 'blocked', 'pending', 'passed', 'robots', 'all'], true)) $view = 'risk';
 $minRisk    = max(0, min(100, (int)($_GET['minrisk'] ?? 40)));
 $page       = max(1, (int)($_GET['page'] ?? 1));
 $perPage    = 30;
@@ -292,13 +297,16 @@ $blackFps = analyzerReadBlacklist($logFile, 'blacklist_fingerprint');
 $cached = $nocache ? null : $cache->get($logFile);
 $parseMs = null;
 
-if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['stats'])) {
+if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['stats'])
+    && (int)($cached['schemaVersion'] ?? 0) === ANALYZER_SCHEMA_VERSION) {
     $entities = $cached['entities'];
     $chartData = $cached['charts'];
     $stats = $cached['stats'];
     $robotSessions = $cached['robotSessions'] ?? [];
+    $campaigns = $cached['campaigns'] ?? [];
     $fromCache = true;
 } else {
+    $campaigns = [];
     $t0 = microtime(true);
     $parsed = AntiBotLogParser::parseFile(
         $logFile,
@@ -310,6 +318,18 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
 
     $scorer = new RiskScorer($blackIps, $blackFps);
     $entities = $scorer->buildEntities($sessions);
+
+    /* ---------- Детектор кампаний накрутки ПФ (поверх RiskScorer) ---------- */
+
+    $pfDetector = new PFCampaignDetector();
+    [$entities, $campaigns, $pfCharts] = $pfDetector->detectWithEntities($entities, $sessions);
+
+    // Рехерситация вердиктов: сущности из ПФ-кампаний получают 'pf_campaign'
+    foreach (['ip', 'fp'] as $type) {
+        foreach ($entities[$type] as $key => $e) {
+            RiskScorer::applyPfVerdict($entities[$type][$key]);
+        }
+    }
 
     // Robots / whitelist lists kept for their tabs
     $robotSessions = [];
@@ -328,7 +348,7 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
     // day-of-week & hour heat over all sessions' request times
     $heat = array_fill(0, 7, array_fill(0, 24, 0));
     $topUrlAgg = [];
-    $riskDist = ['ok' => 0, 'watch' => 0, 'suspect' => 0, 'block' => 0, 'blocked' => 0];
+    $riskDist = ['ok' => 0, 'watch' => 0, 'suspect' => 0, 'block' => 0, 'blocked' => 0, 'pf_campaign' => 0];
 
     foreach (['ip', 'fp'] as $type) {
         foreach ($entities[$type] as $key => $e) {
@@ -401,6 +421,9 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
         'heat' => $heat,
         'topUrls' => $topUrls,
         'riskDist' => $riskDist,
+        // Данные графиков ПФ-детектора: календарь повторов топ-URL,
+        // scatter «разнообразие vs повтор», пул FP→IP, heat URL×дни
+        'pf' => $pfCharts,
     ];
 
     /* ---------- Stats ---------- */
@@ -414,6 +437,8 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
         'riskWatch' => $riskDist['watch'] ?? 0,
         'blocked' => $riskDist['blocked'] ?? 0,
         'passed' => $riskDist['ok'] ?? 0,
+        'pfCampaigns' => count($campaigns),
+        'pfEntities' => $riskDist['pf_campaign'] ?? 0,
         'robots' => count($robotSessions),
         'whitelist' => $whitelistCount ?? 0,
         'lines' => $parsed['meta']['lines'] ?? 0,
@@ -427,10 +452,12 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
     $robotSessions = array_slice($robotSessions, 0, 150);
 
     $cache->put($logFile, [
+        'schemaVersion' => ANALYZER_SCHEMA_VERSION,
         'entities' => $entities,
         'charts' => $chartData,
         'stats' => $stats,
         'robotSessions' => $robotSessions,
+        'campaigns' => $campaigns,
     ]);
     $fromCache = false;
 }
@@ -445,7 +472,12 @@ foreach (['fp', 'ip'] as $type) {
         if ($type === 'ip' && !empty($e['fps'])) continue; // shown under its FP card
         switch ($view) {
             case 'risk':
-                if (in_array($e['riskVerdict'], ['block', 'suspect'], true) && $e['riskScore'] >= $minRisk) $list[] = $e;
+                // ПФ-кампании всегда в топе «плохих», независимо от minrisk-ползунка
+                if (in_array($e['riskVerdict'], ['pf_campaign', 'block', 'suspect'], true) && $e['riskScore'] >= $minRisk) $list[] = $e;
+                break;
+            case 'pf':
+                // Вкладка «Накрутка ПФ»: сущности, входящие в кампании накрутки
+                if (!empty($e['isPFCampaign'])) $list[] = $e;
                 break;
             case 'blocked':
                 if ($e['riskVerdict'] === 'blocked') $list[] = $e;
@@ -464,7 +496,11 @@ foreach (['fp', 'ip'] as $type) {
 }
 
 usort($list, static function (array $a, array $b): int {
-    return ($b['riskScore'] <=> $a['riskScore'])
+    // Накрутка ПФ — всегда в топе; далее по score, topUrlHits, lastSeen
+    $pa = ($a['riskVerdict'] ?? '') === 'pf_campaign' ? 1 : 0;
+    $pb = ($b['riskVerdict'] ?? '') === 'pf_campaign' ? 1 : 0;
+    return ($pb <=> $pa)
+        ?: ($b['riskScore'] <=> $a['riskScore'])
         ?: ($b['topUrlHits'] <=> $a['topUrlHits'])
         ?: strcmp((string)$b['lastSeen'], (string)$a['lastSeen']);
 });
@@ -498,6 +534,7 @@ function viewQuery(array $overrides = []): string {
 }
 
 $verdictLabels = [
+    'pf_campaign' => ['🎯 Накрутка ПФ', 'purple'],
     'blocked' => ['⛔ Заблокирован', 'red'],
     'block'   => ['🚫 К блокировке', 'red'],
     'suspect' => ['🟠 Опасный', 'orange'],
@@ -506,6 +543,7 @@ $verdictLabels = [
 ];
 
 $badgeTitles = [
+    'pf'       => 'Часть кампании накрутки поведенческих факторов (Яндекс.Метрика)',
     'zaprosy'  => 'Многократные повторы одной страницы',
     'dni'      => 'Повторы одной страницы по разным дням',
     'ritm'     => 'Машинная регулярность интервалов',
@@ -543,7 +581,7 @@ h1{font-size:clamp(19px,3.4vw,26px);margin:0 0 4px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:12px}
 .stat b{display:block;font-size:clamp(18px,2.6vw,24px)}
 .stat span{color:var(--muted);font-size:11px}
-.stat.red b{color:var(--red)}.stat.orange b{color:var(--orange)}.stat.yellow b{color:var(--yellow)}.stat.green b{color:var(--green)}
+.stat.red b{color:var(--red)}.stat.orange b{color:var(--orange)}.stat.yellow b{color:var(--yellow)}.stat.green b{color:var(--green)}.stat.purple b{color:#a78bfa}
 
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:clamp(12px,2vw,18px);margin-bottom:14px}
 .panel h2{margin:0 0 4px;font-size:clamp(15px,2.4vw,18px)}
@@ -590,6 +628,11 @@ h1{font-size:clamp(19px,3.4vw,26px);margin:0 0 4px}
 .badge.red{background:#3a1418;color:#fca5a5}.badge.orange{background:#3b2110;color:#fdba74}
 .badge.yellow{background:#382f08;color:#fde68a}.badge.green{background:#0d3328;color:#6ee7b7}
 .badge.blue{background:#12283f;color:#93c5fd}
+.badge.purple{background:#2e1065;color:#c4b5fd}
+.entity-card.pf{border-color:#7c3aed;box-shadow:0 0 0 1px rgba(167,139,250,.25) inset}
+.tab.pf.active{border-color:#a78bfa;background:#2e1065;color:#e9d5ff}
+.camp-chip{display:inline-block;background:#182235;border:1px solid #334155;border-radius:6px;padding:2px 6px;margin:2px 3px 2px 0;font:600 10px ui-monospace,Consolas,monospace;color:#cbd5e1;word-break:break-all}
+.camp-chip.ip{border-color:#7c3aed;color:#c4b5fd}
 .sig{display:inline-block;background:#182235;color:#cbd5e1;border-radius:6px;padding:3px 7px;margin:3px 3px 0 0;font-size:10px}
 
 .risk-gauge{flex:0 0 auto;text-align:center}

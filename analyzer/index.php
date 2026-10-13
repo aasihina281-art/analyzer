@@ -5,7 +5,10 @@ require_once __DIR__ . '/auth.php';
 analyzerRequireLogin();
 
 try {
-    require __DIR__ . '/antibot-analyzer-v2-wrapper.php';
+    // Точка входа — новый behavioral-дашборд (PF-кампании, risk score, графики).
+    // Старый анализатор (wrapper -> antibot-analyzer.php) остаётся доступен
+    // напрямую по адресу /antibot-analyzer-v2-wrapper.php на случай отката.
+    require __DIR__ . '/dashboard.php';
 } catch (Throwable $e) {
     http_response_code(500);
     ?>
