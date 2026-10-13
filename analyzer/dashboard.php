@@ -33,7 +33,7 @@ require_once __DIR__ . '/includes/pf-detector.php';
 
 /* Версия схемы кэшируемых данных. При изменении структуры сущностей /
  * кампаний / графиков нужно увеличить — старый кэш будет инвалидирован. */
-const ANALYZER_SCHEMA_VERSION = 4; // 4 — удалён график «Топ-10 URL» из charts
+const ANALYZER_SCHEMA_VERSION = 5; // 5 — в fpIpPool добавлены флаги блокировки (fpBlocked/blockedIps)
 
 /* ------------------------------------------------------------------ *
  * Blocking actions (unchanged security model)
@@ -323,6 +323,21 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
 
     $pfDetector = new PFCampaignDetector();
     [$entities, $campaigns, $pfCharts] = $pfDetector->detectWithEntities($entities, $sessions);
+
+    /* Помечаем в графе пулов прокси, какие FP/IP уже занесены в blacklist.
+       Делаем это здесь (а не в детекторе), потому что списки blacklist
+       читаются в dashboard.php. */
+    foreach ($pfCharts['fpIpPool'] as &$poolRow) {
+        $poolRow['fpBlocked'] = isset($blackFps[(string)$poolRow['fp']]);
+        $blockedCnt = 0;
+        $blockedList = [];
+        foreach ($poolRow['ips'] as $poolIp) {
+            if (isset($blackIps[(string)$poolIp])) { $blockedCnt++; $blockedList[] = (string)$poolIp; }
+        }
+        $poolRow['blockedIps'] = $blockedCnt;      // сколько IP пула уже в блоке
+        $poolRow['blockedIpSet'] = $blockedList;   // какие именно — для подсветки сегментов
+    }
+    unset($poolRow);
 
     // Рехерситация вердиктов: сущности из ПФ-кампаний получают 'pf_campaign'
     foreach (['ip', 'fp'] as $type) {
@@ -708,6 +723,12 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
 .fp-pool-seg{background:#312e81;border:1px solid #4338ca;color:#c7d2fe;border-radius:5px;padding:2px 6px;font:600 9.5px ui-monospace,Consolas,monospace;cursor:pointer}
 .fp-pool-seg.v6{background:#0c2f4c;border-color:#1d4ed8;color:#93c5fd}
 .fp-pool-seg:hover{filter:brightness(1.3)}
+/* Сегмент IP, уже занесённого в blacklist */
+.fp-pool-seg.blk{background:#3a1418;border-color:#7f1d1d;color:#fca5a5;text-decoration:line-through}
+/* Метка BLOCK для FP/IP, уже находящихся в blacklist (графики пулов прокси) */
+.block-badge{display:inline-block;background:#3a1418;border:1px solid #ef4444;color:#fca5a5;border-radius:4px;padding:1px 6px;font:800 9px ui-monospace,Consolas,monospace;letter-spacing:.06em;vertical-align:middle}
+.fp-pool-label.blocked{color:#fca5a5}
+.fp-pool-bar.bar-blocked .fp-pool-seg{opacity:.55}
 @media(max-width:640px){.camp-list{grid-template-columns:1fr}}
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -1268,8 +1289,19 @@ function drawFpPool(){
   const pool=(CHARTS.pf&&CHARTS.pf.fpIpPool)||[];
   if(!pool.length){host.innerHTML='<div class="empty" style="padding:14px">FP, светившихся с нескольких IP, не найдено — это хорошо.</div>';return}
   host.innerHTML=pool.map(p=>{
-    const segs=p.ips.map(ip=>'<button class="fp-pool-seg'+(ip.includes(':')?' v6':'')+' copy" data-copy="'+esc(ip)+'" title="'+esc(ip)+' ('+esc(p.verdict||'')+')">'+esc(ip.length>22?ip.slice(0,10)+'…'+ip.slice(-6):ip)+'</button>').join('');
-    return '<div class="fp-pool-row"><div class="fp-pool-label">FP '+esc(p.fp)+(p.isPF?' · 🎯 накрутка ПФ':'')+''+' <span style="color:#64748b">→ '+p.ipCount+' IP</span></div><div class="fp-pool-bar">'+segs+(p.ipCount>p.ips.length?'<span class="camp-chip">+'+(p.ipCount-p.ips.length)+'</span>':'')+'</div></div>';
+    // p.fpBlocked — FP уже в blacklist; p.blockedIpSet — список IP из этого пула,
+    // которые тоже заблокированы (считается на PHP-стороне).
+    const fpBlocked=!!p.fpBlocked;
+    const blockedIps=new Set(p.blockedIpSet||[]);
+    const rows=p.ips.map(ip=>{
+      const isBlk=blockedIps.has(ip);
+      const cls='fp-pool-seg'+(ip.includes(':')?' v6':'')+(isBlk?' blk':'')+' copy';
+      return '<button class="'+cls+'" data-copy="'+esc(ip)+'" title="'+esc(ip)+(isBlk?' · BLOCK':'')+(' ('+esc(p.verdict||'')+')')+'">'+esc(ip.length>22?ip.slice(0,10)+'…'+ip.slice(-6):ip)+'</button>';
+    }).join('');
+    const blockBadge=fpBlocked?' <span class="block-badge">BLOCK</span>':'';
+    const nBlk=p.blockedIps||0;
+    const blockedInfo=nBlk>0?' <span style="color:#f87171;font-weight:700">⛔ '+nBlk+'/'+p.ipCount+' IP в блоке</span>':'';
+    return '<div class="fp-pool-row"><div class="fp-pool-label'+(fpBlocked?' blocked':'')+'">FP '+esc(p.fp)+(p.isPF?' · 🎯 накрутка ПФ':'')+blockBadge+blockedInfo+' <span style="color:#64748b">→ '+p.ipCount+' IP</span></div><div class="fp-pool-bar'+(fpBlocked?' bar-blocked':'')+'">'+rows+(p.ipCount>p.ips.length?'<span class="camp-chip">+'+(p.ipCount-p.ips.length)+'</span>':'')+'</div></div>';
   }).join('');
 }
 
