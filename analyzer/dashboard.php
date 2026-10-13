@@ -552,6 +552,17 @@ $badgeTitles = [
 ];
 
 $chartJson = json_encode($chartData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+
+/* Индекс кампаний по id — для блоков «Кампания накрутки ПФ» в карточках */
+$campaignsById = [];
+foreach ($campaigns as $c) { $campaignsById[(string)$c['id']] = $c; }
+
+/* Топ закэшированных кампаний (для панели и кнопки «заблокировать всю кампанию») */
+$topCampaigns = array_slice($campaigns, 0, 10);
+
+/* Есть ли данные для графиков ПФ */
+$pfCharts = $chartData['pf'] ?? [];
+$hasPfCharts = !empty($pfCharts['pfCalendar']) || !empty($pfCharts['fpIpPool']) || !empty($pfCharts['pfScatter']);
 ?>
 <!doctype html>
 <html lang="ru">
@@ -692,6 +703,21 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
 .history-error{color:#fca5a5}
 .mini-hist{margin-top:8px}
 .mini-hist svg{width:100%;height:auto;display:block}
+.day-repeats{margin-top:6px}
+.day-repeats svg{width:100%;height:auto;display:block}
+.camp-box{margin-top:10px;background:#1a1030;border:1px solid #4c1d95;border-radius:10px;padding:9px 11px;font-size:11px;color:#ddd6fe}
+.camp-title{display:block;color:#c4b5fd;font-size:11px;margin-bottom:3px}
+.camp-sub{color:#a5b4fc;margin-bottom:4px;word-break:break-all}
+.pf-panel{border-color:#4c1d95}
+.camp-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,460px),1fr));gap:11px}
+.camp-card{background:#150e26;border:1px solid #4c1d95;border-radius:var(--radius);padding:14px;min-width:0}
+.fp-pool-row{margin:7px 0}
+.fp-pool-label{font:600 10.5px ui-monospace,Consolas,monospace;color:#c4b5fd;word-break:break-all;margin-bottom:3px}
+.fp-pool-bar{display:flex;flex-wrap:wrap;gap:3px}
+.fp-pool-seg{background:#312e81;border:1px solid #4338ca;color:#c7d2fe;border-radius:5px;padding:2px 6px;font:600 9.5px ui-monospace,Consolas,monospace;cursor:pointer}
+.fp-pool-seg.v6{background:#0c2f4c;border-color:#1d4ed8;color:#93c5fd}
+.fp-pool-seg:hover{filter:brightness(1.3)}
+@media(max-width:640px){.camp-list{grid-template-columns:1fr}}
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -731,6 +757,8 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
 </div>
 
 <div class="grid">
+    <div class="stat purple"><b><?= fmtInt($stats['pfEntities'] ?? 0) ?></b><span>🎯 Накрутка ПФ (сущностей)</span></div>
+    <div class="stat purple"><b><?= fmtInt($stats['pfCampaigns'] ?? 0) ?></b><span>ПФ-кампаний (пулы IP/FP)</span></div>
     <div class="stat red"><b><?= fmtInt($stats['riskBlock'] ?? 0) ?></b><span>К блокировке (риск ≥60)</span></div>
     <div class="stat orange"><b><?= fmtInt($stats['riskSuspect'] ?? 0) ?></b><span>Опасные (40–59)</span></div>
     <div class="stat yellow"><b><?= fmtInt($stats['riskWatch'] ?? 0) ?></b><span>Наблюдать (20–39)</span></div>
@@ -770,10 +798,101 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
         <div class="hint">Топ-10 URL по общему числу запросов. Повтор одного URL одним посетителем подсвечивается в карточках ниже.</div>
         <div id="chart-topurls"></div>
     </div>
+
+    <?php if ($hasPfCharts): ?>
+    <!-- ===== Графики накрутки ПФ (6.1–6.4) ===== -->
+    <div class="chart-card">
+        <h3>📅 Календарь повторов накручиваемых URL</h3>
+        <div class="hint">Суммарные заходы всех ПФ-кампаний по их топ-URL за день. Красная пунктирная линия — порог аномальности. Столбики выше линии = ежедневная накрутка.</div>
+        <div class="chart-scroll"><svg id="chart-pf-calendar" class="chart-svg" viewBox="0 0 560 220" role="img" aria-label="Повторы топ-URL по дням"></svg></div>
+    </div>
+
+    <div class="chart-card">
+        <h3>🔀 Разнообразие против повтора (scatter)</h3>
+        <div class="hint">X — уникальные URL сущности, Y — доля трафика на топ-URL (%). Люди: справа внизу. Накрутка ПФ: фиолетовые точки слева вверху.</div>
+        <div class="chart-scroll"><svg id="chart-pf-scatter" class="chart-svg" viewBox="0 0 560 260" role="img" aria-label="Scatter разнообразие против повтора"></svg></div>
+        <div class="chart-legend"><span><i style="background:#a78bfa"></i>Накрутка ПФ</span><span><i style="background:#ef4444"></i>К блокировке</span><span><i style="background:#fb923c"></i>Опасные</span><span><i style="background:#34d399"></i>Нормальные</span></div>
+    </div>
+
+    <div class="chart-card" style="grid-column:1/-1">
+        <h3>🕸 Пулы прокси: один Fingerprint → много IP</h3>
+        <div class="hint">Каждая строка — отпечаток браузера и все IP, с которых он светился. Длинная полоса = бот-ферма с ротацией прокси; IPv6-сегменты помечены синим.</div>
+        <div id="chart-fp-pool"></div>
+    </div>
+
+    <div class="chart-card" style="grid-column:1/-1">
+        <h3>🌡 «Частокол»: топ-5 кампаний × дни (заходы на накручиваемый URL)</h3>
+        <div class="hint">Строки — кампании/сущности, столбцы — дни, яркость — число заходов на топ-URL. Ровная «шахматная» полоса = ежедневная накрутка.</div>
+        <div class="chart-scroll" id="chart-pf-heat"></div>
+    </div>
+    <?php endif; ?>
 </div>
+
+<?php if ($topCampaigns && in_array($view, ['pf', 'risk'], true)): ?>
+<!-- ===== Панель кампаний накрутки ПФ ===== -->
+<div class="panel pf-panel">
+    <h2>🎯 Кампании накрутки поведенческих факторов (объединённые пулы IP + FP)</h2>
+    <div class="hint">Кампания объединяет сущности по совпадающему отпечатку, подсети /24 (/48 для IPv6) или общему UA при одинаковом целевом URL. Блокировка кампании добавляет в blacklist все её IP и FP разом.</div>
+    <div class="camp-list">
+        <?php foreach ($topCampaigns as $c): if (empty($c['isPFCampaign'])) continue; ?>
+        <article class="camp-card">
+            <div class="entity-top">
+                <div style="min-width:0">
+                    <span class="badge purple">🎯 PF · вес <?= (int)$c['pfWeight'] ?></span>
+                    <?php if ((int)$c['csrfErrors'] > 0): ?><span class="badge red">CSRF ×<?= (int)$c['csrfErrors'] ?></span><?php endif; ?>
+                    <?php if (!empty($c['refererPattern'])): ?><span class="badge blue">ref: <?= h($c['refererPattern']) ?></span><?php endif; ?>
+                    <div class="entity-value"><?= h($c['primaryType'] === 'fp' ? 'FP ' . $c['primaryValue'] : $c['primaryValue']) ?></div>
+                    <div class="url-hit">Цель: <code><?= h($c['topUrl']) ?></code> — <?= (int)$c['topUrlHits'] ?> заходов, макс <?= (int)$c['urlDayMax'] ?>/день, <?= (int)$c['topUrlDays'] ?> дн. · Яндекс ref <?= (int)$c['refererYandexRatio'] ?>% · ysclid <?= (int)$c['ysclidRatio'] ?>%</div>
+                </div>
+                <div class="risk-gauge">
+                    <svg width="64" height="64" viewBox="0 0 42 42" aria-hidden="true">
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="#1e293b" stroke-width="5"/>
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="#a78bfa" stroke-width="5" stroke-linecap="round"
+                            stroke-dasharray="<?= min(100,(int)$c['riskScore']) ?> <?= max(0,100 - (int)$c['riskScore']) ?>" stroke-dashoffset="25"/>
+                    </svg>
+                    <div class="risk-num" style="margin-top:-46px;color:#c4b5fd"><?= (int)$c['riskScore'] ?></div>
+                    <div class="risk-lbl" style="margin-top:26px">PF-вес</div>
+                </div>
+            </div>
+            <div class="facts">
+                <div><b>IP в пуле</b><span class="<?= $c['ipsCount']>=5?'bad':($c['ipsCount']>=3?'warn':'') ?>"><?= (int)$c['ipsCount'] ?></span></div>
+                <div><b>FP</b><span><?= (int)$c['fpCount'] ?></span></div>
+                <div><b>Сессий</b><span><?= (int)$c['sessionsCount'] ?></span></div>
+                <div><b>Запросов</b><span><?= fmtInt($c['totalRequests']) ?></span></div>
+                <div><b>CAPTCHA прош.</b><span><?= (int)$c['captchaPassed'] ?></span></div>
+                <div><b>Дней</b><span class="<?= $c['topUrlDays']>=3?'bad':($c['topUrlDays']>=2?'warn':'') ?>"><?= (int)$c['topUrlDays'] ?></span></div>
+            </div>
+            <div class="linked"><b>IP:</b>
+                <?php foreach (array_slice($c['ips'],0,20) as $cip): ?><button class="token copy" data-copy="<?= h($cip) ?>"><?= h($cip) ?></button><?php endforeach; ?>
+                <?php if (count($c['ips'])>20): ?><span class="muted">+<?= count($c['ips'])-20 ?></span><?php endif; ?>
+            </div>
+            <?php if ($c['fingerprints']): ?>
+            <div class="linked"><b>FP:</b>
+                <?php foreach (array_slice($c['fingerprints'],0,4) as $cfp): ?><button class="token copy" data-copy="<?= h($cfp) ?>"><?= h(substr((string)$cfp,0,20)) ?>…</button><?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+            <div class="actions">
+                <button type="button" class="history-btn camp-hist-btn" data-camp-value="<?= h($c['id']) ?>">🕓 История кампании</button>
+                <?php if (analyzerActionAuthorized()): ?>
+                    <?php foreach (array_slice($c['ips'],0,10) as $cip): ?>
+                        <form method="post"><input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>"><input type="hidden" name="analyzer_action" value="ip"><input type="hidden" name="ip" value="<?= h($cip) ?>"><button class="action ip-action" type="submit" title="Бан <?= h($cip) ?>">🚫 <?= h(explode('.', $cip)[0] !== '' && filter_var($cip, FILTER_VALIDATE_IP) ? (strlen($cip)>15?substr($cip,0,12).'…':$cip) : $cip) ?></button></form>
+                    <?php endforeach; ?>
+                    <?php foreach ($c['fingerprints'] as $cfp): ?>
+                        <form method="post"><input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>"><input type="hidden" name="analyzer_action" value="fingerprint"><input type="hidden" name="fingerprint" value="<?= h($cfp) ?>"><button class="action fp-action" type="submit" title="Бан FP <?= h($cfp) ?>">🚫 FP</button></form>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+            <div class="history-panel"></div>
+            <div class="meta"><?= h($c['firstSeen']) ?> → <?= h($c['lastSeen']) ?> · id: <?= h($c['id']) ?></div>
+        </article>
+        <?php endforeach; ?>
+    </div>
+</div>
+<?php endif; ?>
 
 <!-- Tabs -->
 <div class="tabs">
+    <a class="tab pf <?= $view==='pf'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'pf','page'=>''])) ?>">🎯 Накрутка ПФ (<?= (int)($stats['pfEntities']??0) ?>)</a>
     <a class="tab <?= $view==='risk'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'risk','page'=>''])) ?>">🔴 Плохие визитеры (<?= (int)(($stats['riskBlock']??0)+($stats['riskSuspect']??0)) ?>)</a>
     <a class="tab <?= $view==='blocked'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'blocked','page'=>''])) ?>">⛔ Заблокированы (<?= (int)($stats['blocked']??0) ?>)</a>
     <a class="tab <?= $view==='pending'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'pending','page'=>''])) ?>">🟡 CAPTCHA не завершена</a>
@@ -805,6 +924,7 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
     <div class="panel">
         <h2><?php
             echo match($view) {
+                'pf' => '🎯 Накрутка поведенческих факторов (Яндекс.Метрика)',
                 'risk' => '🔴 Плохие визитеры — рекомендуются к блокировке',
                 'blocked' => '⛔ Уже заблокированы',
                 'pending' => '🟡 CAPTCHA показана, но не завершена',
@@ -815,6 +935,8 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
         <div class="hint">
             <?php if ($view === 'risk'): ?>
                 Оценка строится на <b>поведении после</b> прохождения CAPTCHA: повторы одной страницы (в т.ч. ежедневно), машинная периодичность интервалов, мгновенные решения капчи, ротация IP у одного отпечатка. Порог показа: риск ≥ <?= (int)$minRisk ?>.
+            <?php elseif ($view === 'pf'): ?>
+                <b>Накрутка поведенческих факторов</b> — посетители, которые проходят CAPTCHA, но затем монотонно набивают один и тот же URL (часто из выдачи Яндекса, <code>ysclid</code>/<code>utm_referrer</code>), в том числе ежедневно. Это напрямую ухудшает ранжирование в Яндексе. Фиолетовые карточки — участники объединённых <b>кампаний</b> (пулы прокси с одним отпечатком). Кнопка «🎯 Кампания» открывает историю всех IP/FP группы.
             <?php elseif ($view === 'pending'): ?>
                 Один незавершённый показ CAPTCHA — не основание для блокировки: пользователь мог закрыть страницу. Но систематические незавершённые проверки — сигнал.
             <?php endif; ?>
@@ -831,8 +953,9 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
             $actionIp = $isFp ? ($item['ips'][0] ?? '') : $item['value'];
             $actionFp = $isFp ? $item['value'] : ($item['fps'][0] ?? '');
             $iv = $item['intervals'];
+            $campId = (string)($item['campaignId'] ?? '');
         ?>
-        <article class="entity-card" data-entity-type="<?= h($item['type']) ?>" data-entity-value="<?= h($item['value']) ?>">
+        <article class="entity-card <?= !empty($item['isPFCampaign']) ? 'pf' : '' ?>" data-entity-type="<?= h($item['type']) ?>" data-entity-value="<?= h($item['value']) ?>"<?= $campId !== '' ? ' data-campaign="' . h($campId) . '"' : '' ?>>
             <div class="entity-top">
                 <div style="min-width:0">
                     <span class="badge <?= h($vc) ?>"><?= h($vl) ?></span>
@@ -868,6 +991,12 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
                 <div><b>CAPTCHA пок/прош</b><span><?= (int)$item['captchaShown'] ?>/<?= (int)$item['captchaPassed'] ?></span></div>
                 <div><b>Быстрых реш. ≤3с</b><span class="<?= $item['fastPasses']>=3?'bad':'' ?>"><?= (int)$item['fastPasses'] ?></span></div>
                 <div><b>IP / FP / UA</b><span><?= (int)$item['ipCount'] ?>/<?= (int)$item['fpCount'] ?>/<?= (int)$item['uaCount'] ?></span></div>
+                <?php if (!empty($item['isPFCampaign']) || ($item['pfScore'] ?? 0) > 0): ?>
+                    <div><b>PF-вес</b><span class="<?= ($item['pfScore'] ?? 0) >= 80 ? 'bad' : 'warn' ?>"><?= (int)($item['pfScore'] ?? 0) ?></span></div>
+                    <div><b>Яндекс ref %</b><span class="<?= ($item['refererYandexRatio'] ?? 0) >= 60 ? 'warn' : '' ?>"><?= (int)($item['refererYandexRatio'] ?? 0) ?>%</span></div>
+                    <div><b>ysclid %</b><span><?= (int)($item['ysclidRatio'] ?? 0) ?>%</span></div>
+                    <div><b>CSRF-ошибки</b><span class="<?= ($item['csrfErrors'] ?? 0) >= 2 ? 'bad' : '' ?>"><?= (int)($item['csrfErrors'] ?? 0) ?></span></div>
+                <?php endif; ?>
             </div>
 
             <?php if ($item['topUrl'] !== ''): ?>
@@ -891,8 +1020,29 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
 
             <div class="mini-hist" data-hist='<?= h(json_encode(array_values($item['intervalHistogram'] ?? []))) ?>'></div>
 
+            <?php /* Мини-график 6.5: повторы топ-URL по дням */ ?>
+            <?php if (!empty($item['topPathDaySeries'])): ?>
+            <div class="day-repeats" data-days='<?= h(json_encode($item['topPathDaySeries'], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)) ?>'></div>
+            <?php endif; ?>
+
+            <?php if ($campId !== '' && isset($campaignsById[$campId])): $c = $campaignsById[$campId]; ?>
+            <div class="camp-box">
+                <b class="camp-title">🎯 Кампания накрутки ПФ</b>
+                <div class="camp-sub"><?= h($c['topUrl']) ?> — <?= (int)$c['topUrlHits'] ?> заходов за <?= (int)$c['topUrlDays'] ?> дн. · IP в пуле: <?= (int)$c['ipsCount'] ?> · referer: <?= h($c['refererPattern']) ?></div>
+                <div>
+                    <?php foreach (array_slice($c['ips'], 0, 12) as $cip): ?><span class="camp-chip ip"><?= h($cip) ?></span><?php endforeach; ?>
+                    <?php if (count($c['ips']) > 12): ?><span class="camp-chip">+<?= count($c['ips']) - 12 ?> IP</span><?php endif; ?>
+                    <?php foreach (array_slice($c['fingerprints'], 0, 3) as $cfp): ?><span class="camp-chip"><?= h(substr((string)$cfp, 0, 16)) ?>…</span><?php endforeach; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+
             <div class="actions">
                 <button type="button" class="history-btn">🕓 История</button>
+                <?php if ($campId !== '' && isset($campaignsById[$campId])): $cc = $campaignsById[$campId]; ?>
+                    <button type="button" class="history-btn camp-hist-btn" data-camp-value="<?= h($campId) ?>"
+                        data-camp-ips='<?= h(json_encode(array_slice($cc['ips'], 0, 15))) ?>'>🎯 Кампания</button>
+                <?php endif; ?>
                 <button class="copy" data-copy="<?= h($item['value']) ?>">Копировать</button>
                 <?php if (analyzerActionAuthorized()): ?>
                     <?php if ($isFp): ?>
@@ -1088,6 +1238,106 @@ function drawMiniHists(){
 
 drawTimeline(); drawDonut(); drawHeat(); drawTopUrls(); drawMiniHists();
 
+/* ---------- 6.1 Календарь повторов топ-URL (столбики по дням + порог) ---------- */
+function drawPfCalendar(){
+  const svg=document.getElementById('chart-pf-calendar'); if(!svg) return;
+  const cal=CHARTS.pf && CHARTS.pf.pfCalendar || {};
+  const days=Object.keys(cal);
+  if(!days.length){svg.outerHTML='<div class="empty" style="padding:14px">Нет ПФ-активности по дням.</div>';return}
+  const thr=(CHARTS.pf&&CHARTS.pf.pfAnomalyThreshold)||5;
+  const W=560,H=220,L=34,R=8,T=14,B=42,iw=W-L-R,ih=H-T-B;
+  const max=Math.max(thr*1.5,...days.map(d=>cal[d]));
+  const bw=iw/days.length;
+  const y=v=>T+ih-(v/max)*ih;
+  let s='';
+  for(let v=0;v<=max;v+=Math.ceil(max/4)){s+='<line x1="'+L+'" y1="'+y(v)+'" x2="'+(W-R)+'" y2="'+y(v)+'" stroke="#263449"/><text x="'+(L-5)+'" y="'+(y(v)+3)+'" text-anchor="end" fill="#94a3b8" font-size="9">'+v+'</text>'}
+  days.forEach((d,i)=>{
+    const v=cal[d],x=L+i*bw,hh=Math.max(1,(v/max)*ih);
+    s+='<rect x="'+(x+bw*.15).toFixed(1)+'" y="'+(T+ih-hh).toFixed(1)+'" width="'+(bw*.7).toFixed(1)+'" height="'+hh.toFixed(1)+'" rx="2" fill="'+(v>=thr?'#a78bfa':'#3b82f6')+'"><title>'+esc(d)+': '+v+' заходов'+(v>=thr?' — аномально':'')+'</title></rect>';
+    s+='<text transform="translate('+(x+bw/2).toFixed(1)+' '+(H-26)+') rotate(45)" text-anchor="start" fill="#94a3b8" font-size="8">'+esc(d.slice(5))+'</text>';
+  });
+  // красная линия порога
+  s+='<line x1="'+L+'" y1="'+y(thr)+'" x2="'+(W-R)+'" y2="'+y(thr)+'" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="5 4"/>';
+  s+='<text x="'+(W-R)+'" y="'+(y(thr)-4)+'" text-anchor="end" fill="#ef4444" font-size="9">порог '+thr+'/день</text>';
+  svg.innerHTML=s;
+}
+
+/* ---------- 6.2 Scatter «разнообразие vs повтор» ---------- */
+function drawPfScatter(){
+  const svg=document.getElementById('chart-pf-scatter'); if(!svg) return;
+  const pts=(CHARTS.pf&&CHARTS.pf.pfScatter)||[];
+  if(!pts.length){svg.outerHTML='<div class="empty" style="padding:14px">Недостаточно данных.</div>';return}
+  const W=560,H=260,L=40,R=10,T=12,B=34,iw=W-L-R,ih=H-T-B;
+  const maxX=Math.max(10,...pts.map(p=>p.uniqueUrls));
+  const rMax=Math.max(...pts.map(p=>Math.sqrt(Math.max(1,p.requests))));
+  const x=v=>L+Math.min(1,v/maxX)*iw, y=v=>T+ih-(v/100)*ih;
+  const col=p=>p.isPF?'#a78bfa':(p.verdict==='block'||p.verdict==='blocked'?'#ef4444':(p.verdict==='suspect'?'#fb923c':(p.verdict==='watch'?'#facc15':'#34d399')));
+  let s='<rect x="'+x(0)+'" y="'+y(100)+'" width="'+(x(3)-x(0))+'" height="'+(y(60)-y(100))+'" fill="rgba(167,139,250,.08)"/>';
+  s+='<text x="'+(x(1)+2)+'" y="'+(y(97)+0)+'" fill="#a78bfa" font-size="8">зона накрутки</text>';
+  for(let v=0;v<=100;v+=25){s+='<line x1="'+L+'" y1="'+y(v)+'" x2="'+(W-R)+'" y2="'+y(v)+'" stroke="#263449"/><text x="'+(L-5)+'" y="'+(y(v)+3)+'" text-anchor="end" fill="#94a3b8" font-size="9">'+v+'%</text>'}
+  const xs=[1,3,5,10,20,50]; xs.forEach(v=>{if(v<=maxX)s+='<text x="'+x(v)+'" y="'+(H-18)+'" text-anchor="middle" fill="#94a3b8" font-size="9">'+v+'</text>'});
+  s+='<text x="'+(L+iw/2)+'" y="'+(H-4)+'" text-anchor="middle" fill="#64748b" font-size="9">уникальных URL →（люди справа）</text>';
+  pts.forEach(p=>{
+    const r=3+ (Math.sqrt(Math.max(1,p.requests))/rMax)*7;
+    s+='<circle cx="'+x(p.uniqueUrls).toFixed(1)+'" cy="'+y(p.share).toFixed(1)+'" r="'+r.toFixed(1)+'" fill="'+col(p)+'" fill-opacity=".75" stroke="#0b1220"><title>'+esc(p.label)+' · '+p.requests+' зап. · '+p.uniqueUrls+' URL · топ '+p.share+'%</title></circle>';
+  });
+  svg.innerHTML=s;
+}
+
+/* ---------- 6.3 Пулы FP -> IP (sankey-подобные полосы) ---------- */
+function drawFpPool(){
+  const host=document.getElementById('chart-fp-pool'); if(!host) return;
+  const pool=(CHARTS.pf&&CHARTS.pf.fpIpPool)||[];
+  if(!pool.length){host.innerHTML='<div class="empty" style="padding:14px">FP, светившихся с нескольких IP, не найдено — это хорошо.</div>';return}
+  host.innerHTML=pool.map(p=>{
+    const segs=p.ips.map(ip=>'<button class="fp-pool-seg'+(ip.includes(':')?' v6':'')+' copy" data-copy="'+esc(ip)+'" title="'+esc(ip)+' ('+esc(p.verdict||'')+')">'+esc(ip.length>22?ip.slice(0,10)+'…'+ip.slice(-6):ip)+'</button>').join('');
+    return '<div class="fp-pool-row"><div class="fp-pool-label">FP '+esc(p.fp)+(p.isPF?' · 🎯 накрутка ПФ':'')+''+' <span style="color:#64748b">→ '+p.ipCount+' IP</span></div><div class="fp-pool-bar">'+segs+(p.ipCount>p.ips.length?'<span class="camp-chip">+'+(p.ipCount-p.ips.length)+'</span>':'')+'</div></div>';
+  }).join('');
+}
+
+/* ---------- 6.4 Heat «кампания × дни» ---------- */
+function drawPfHeat(){
+  const host=document.getElementById('chart-pf-heat'); if(!host) return;
+  const pf=CHARTS.pf||{}, heat=pf.pfHeat||{};
+  const days=heat.days||[], rows=heat.rows||[];
+  if(!rows.length||!days.length){host.innerHTML='<div class="empty" style="padding:14px">Нет ПФ-кампаний для heatmap.</div>';return}
+  let max=1; rows.forEach(r=>Object.values(r.series||{}).forEach(v=>{if(v>max)max=v}));
+  let html='<table class="heat-table"><thead><tr><th></th>';
+  days.forEach(d=>html+='<th>'+esc(String(d).slice(8,10))+'</th>');
+  html+='</tr></thead><tbody>';
+  rows.forEach(r=>{
+    html+='<tr><th style="text-align:right;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="'+esc(r.url||'')+'">'+esc(r.label)+'</th>';
+    days.forEach(d=>{
+      const v=(r.series||{})[d]||0;
+      const a=v?Math.min(.95,.12+v/max*.83):.04;
+      html+='<td title="'+esc(r.label)+' · '+esc(d)+': '+v+' заходов" style="background:rgba(167,139,250,'+a+')"></td>';
+    });
+    html+='</tr>';
+  });
+  html+='</tbody></table><div class="chart-legend"><span><i style="background:#a78bfa"></i>Заходы на накручиваемый URL в этот день</span></div>';
+  host.innerHTML=html;
+}
+
+/* ---------- 6.5 Мини-график повторов топ-URL по дням в карточке ---------- */
+function drawDayRepeats(){
+  document.querySelectorAll('.day-repeats').forEach(el=>{
+    let days={}; try{days=JSON.parse(el.dataset.days||'{}')}catch(_){}
+    const keys=Object.keys(days).sort().slice(-14);
+    if(keys.length<2){el.innerHTML='';return}
+    const thr=5,W=320,H=54,P=3,bw=(W-P*(keys.length+1))/keys.length,max=Math.max(thr,...keys.map(k=>days[k]));
+    let s='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-label="Повторы топ-URL по дням">';
+    keys.forEach((k,i)=>{
+      const v=days[k],hh=Math.max(1,(v/max)*(H-16)),x=P+i*(bw+P);
+      s+='<rect x="'+x.toFixed(1)+'" y="'+(H-13-hh).toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+hh.toFixed(1)+'" rx="2" fill="'+(v>=thr?'#a78bfa':'#3b82f6')+'"><title>'+esc(k)+': '+v+' заходов</title></rect>';
+      s+='<text x="'+(x+bw/2).toFixed(1)+'" y="'+(H-3)+'" text-anchor="middle" fill="#64748b" font-size="6.5">'+esc(k.slice(8,10))+'</text>';
+    });
+    s+='</svg><div style="font-size:9px;color:#64748b">повторы топ-URL по дням (число месяца), фиолетовый ≥'+thr+'/день</div>';
+    el.innerHTML=s;
+  });
+}
+
+drawPfCalendar(); drawPfScatter(); drawFpPool(); drawPfHeat(); drawDayRepeats();
+
 /* ---------- Copy buttons ---------- */
 document.addEventListener('click',async e=>{
   const btn=e.target.closest('.copy');
@@ -1098,29 +1348,61 @@ document.addEventListener('click',async e=>{
   const old=btn.textContent; btn.textContent='✓ Скопировано'; setTimeout(()=>btn.textContent=old,900);
 });
 
-/* ---------- History loader ---------- */
+/* ---------- History loader (entity + campaign) ---------- */
 const kindLabel=k=>k==='request'?'REQ':(k||'').toUpperCase();
-document.addEventListener('click',async e=>{
-  const btn=e.target.closest('.history-btn');
-  if(!btn) return;
-  const card=btn.closest('.entity-card');
-  const panel=card.querySelector('.history-panel');
-  panel.classList.toggle('open');
-  btn.textContent=panel.classList.contains('open')?'🕓 Скрыть историю':'🕓 История';
-  if(!panel.classList.contains('open')||panel.dataset.loaded==='1')return;
+async function loadHistoryInto(panel,type,value){
   panel.innerHTML='<div class="history-loading">Загрузка истории…</div>';
-  const type=card.dataset.entityType==='fp'?'fingerprint':'ip';
-  const value=card.dataset.entityValue||'';
   try{
     const r=await fetch('request-history.php?type='+encodeURIComponent(type)+'&value='+encodeURIComponent(value),{credentials:'same-origin',cache:'no-store'});
     const d=await r.json(); if(!d.ok)throw new Error(d.error||'Ошибка');
     panel.dataset.loaded='1';
     let html='<div style="font-size:11px;color:#94a3b8;margin-bottom:6px">'+d.events.length+' событий · '+d.sessions+' сессий · '+d.ips.length+' IP'+(d.truncated?' · показаны последние':'')+'</div><div class="history-list">';
     if(!d.events.length)html+='<div class="history-loading">Событий не найдено.</div>';
-    d.events.forEach(ev=>html+='<div class="history-event"><time>'+esc(ev.time)+'</time><span class="history-kind '+esc(ev.kind)+'">'+esc(kindLabel(ev.kind))+'</span><code>'+esc(ev.message)+'</code></div>');
+    d.events.forEach(ev=>html+='<div class="history-event"><time>'+esc(ev.time)+'</time><span class="history-kind '+esc(ev.kind)+'">'+esc(kindLabel(ev.kind))+'</span><code>'+esc(ev.ip?ev.ip+' — ':'')+esc(ev.message)+'</code></div>');
     html+='</div>';
     panel.innerHTML=html;
   }catch(err){ panel.innerHTML='<div class="history-error">Не удалось загрузить историю: '+esc(err.message)+'</div>'; }
+}
+document.addEventListener('click',async e=>{
+  /* Кнопка «История кампании»: объединяем историю всех IP группы */
+  const cbtn=e.target.closest('.camp-hist-btn');
+  if(cbtn){
+    const host=cbtn.closest('.entity-card')||cbtn.closest('.camp-card');
+    const panel=host.querySelector('.history-panel');
+    panel.classList.toggle('open');
+    cbtn.textContent=panel.classList.contains('open')?'🕓 Скрыть':'🎯 Кампания';
+    if(!panel.classList.contains('open')||panel.dataset.loaded==='1')return;
+    panel.innerHTML='<div class="history-loading">Загрузка истории кампании…</div>';
+    try{
+      let uniq=[];
+      try{ uniq=JSON.parse(cbtn.dataset.campIps||'[]'); }catch(_){}
+      if(!uniq.length) uniq=[...host.querySelectorAll('.token,.camp-chip.ip')].map(x=>x.dataset.copy||x.textContent.trim());
+      uniq=[...new Set(uniq)].filter(v=>/^[0-9a-fA-F:.]{3,}$/.test(v)).slice(0,15);
+      const results=await Promise.all(uniq.map(v=>fetch('request-history.php?type=ip&value='+encodeURIComponent(v),{credentials:'same-origin'}).then(r=>r.json()).catch(()=>null)));
+      const events=[]; const ipSet=new Set();
+      results.forEach(d=>{ if(!d||!d.ok)return; events.push(...d.events); (d.ips||[]).forEach(i=>ipSet.add(i)); });
+      events.sort((a,b)=>String(a.time).localeCompare(String(b.time)));
+      const shown=events.slice(-250);
+      panel.dataset.loaded='1';
+      let html='<div style="font-size:11px;color:#94a3b8;margin-bottom:6px">'+shown.length+' из '+events.length+' событий · IP в кампании: '+ipSet.size+'</div><div class="history-list">';
+      if(!shown.length)html+='<div class="history-loading">Событий не найдено.</div>';
+      shown.forEach(ev=>html+='<div class="history-event"><time>'+esc(ev.time)+'</time><span class="history-kind '+esc(ev.kind)+'">'+esc(kindLabel(ev.kind))+'</span><code>'+esc(ev.ip?ev.ip+' — ':'')+esc(ev.message)+'</code></div>');
+      html+='</div>';
+      panel.innerHTML=html;
+    }catch(err){ panel.innerHTML='<div class="history-error">Ошибка загрузки истории кампании: '+esc(err.message)+'</div>'; }
+    return;
+  }
+  const btn=e.target.closest('.history-btn');
+  if(!btn || btn.classList.contains('camp-hist-btn')) return;
+  const card=btn.closest('.entity-card')||btn.closest('.camp-card');
+  if(!card) return;
+  const panel=card.querySelector('.history-panel');
+  if(!panel) return;
+  panel.classList.toggle('open');
+  btn.textContent=panel.classList.contains('open')?'🕓 Скрыть историю':'🕓 История';
+  if(!panel.classList.contains('open')||panel.dataset.loaded==='1')return;
+  const type=card.dataset.entityType==='fp'?'fingerprint':'ip';
+  await loadHistoryInto(panel,type,card.dataset.entityValue||'');
 });
 })();
 </script>
