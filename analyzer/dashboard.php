@@ -33,7 +33,7 @@ require_once __DIR__ . '/includes/pf-detector.php';
 
 /* Версия схемы кэшируемых данных. При изменении структуры сущностей /
  * кампаний / графиков нужно увеличить — старый кэш будет инвалидирован. */
-const ANALYZER_SCHEMA_VERSION = 3;
+const ANALYZER_SCHEMA_VERSION = 4; // 4 — удалён график «Топ-10 URL» из charts
 
 /* ------------------------------------------------------------------ *
  * Blocking actions (unchanged security model)
@@ -347,7 +347,6 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
 
     // day-of-week & hour heat over all sessions' request times
     $heat = array_fill(0, 7, array_fill(0, 24, 0));
-    $topUrlAgg = [];
     $riskDist = ['ok' => 0, 'watch' => 0, 'suspect' => 0, 'block' => 0, 'blocked' => 0, 'pf_campaign' => 0];
 
     foreach (['ip', 'fp'] as $type) {
@@ -382,12 +381,6 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
             $hour = (int)substr($ts, 11, 2);
             $heat[$dow - 1][$hour]++;
         }
-        foreach ($s['urls'] as $u) {
-            $u = (string)$u;
-            $u = preg_replace('/\?.*$/', '', $u);
-            if ($u === '') continue;
-            $topUrlAgg[$u] = ($topUrlAgg[$u] ?? 0) + 1;
-        }
     }
     unset($sessions);
     ksort($bucketCounts, SORT_STRING);
@@ -410,16 +403,9 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
     }
     if ($acc > 0) $timeline[] = ['t' => substr((string)$accLabel, 0, 13), 'total' => $acc, 'bad' => $accBad];
 
-    arsort($topUrlAgg);
-    $topUrls = [];
-    foreach (array_slice($topUrlAgg, 0, 10, true) as $u => $c) {
-        $topUrls[] = ['url' => $u, 'count' => $c];
-    }
-
     $chartData = [
         'timeline' => $timeline,
         'heat' => $heat,
-        'topUrls' => $topUrls,
         'riskDist' => $riskDist,
         // Данные графиков ПФ-детектора: календарь повторов топ-URL,
         // scatter «разнообразие vs повтор», пул FP→IP, heat URL×дни
@@ -610,6 +596,16 @@ h1{font-size:clamp(19px,3.4vw,26px);margin:0 0 4px}
 @media(max-width:640px){.tab{flex:1 1 45%;text-align:center;padding:10px 6px;font-size:11px}}
 
 .charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:12px;margin-bottom:14px}
+/* Пары графиков 50/50 на ПК и планшетах (≥641px); на телефоне — вертикально */
+.charts .chart-card.wide{grid-column:1/-1}
+.charts-pair{display:contents}
+@media(min-width:641px){
+  .charts-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;grid-column:1/-1;align-items:stretch}
+  .charts-pair>.chart-card{grid-column:auto}
+}
+/* Сетка ПФ-графиков: календарь+scatter 50/50, широкие блоки на всю ширину */
+.charts-grid{display:grid;grid-template-columns:1fr;gap:12px;grid-column:1/-1}
+@media(min-width:641px){.charts-grid{grid-template-columns:1fr 1fr}.charts-grid>.chart-card.wide{grid-column:1/-1}}
 .chart-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px;min-width:0}
 .chart-card h3{margin:0 0 2px;font-size:14px}
 .chart-card .hint{margin-bottom:8px}
@@ -624,11 +620,6 @@ h1{font-size:clamp(19px,3.4vw,26px);margin:0 0 4px}
 .heat-table{border-collapse:separate;border-spacing:2px;font-size:9px;width:100%}
 .heat-table th{color:var(--muted);font-weight:500;text-align:center;padding:2px}
 .heat-table td{width:auto;min-width:14px;height:16px;border-radius:3px}
-.top-url-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;font-size:11px;padding:4px 0;border-bottom:1px solid #172033}
-.top-url-row:last-child{border-bottom:0}
-.top-url-row code{color:#93c5fd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
-.top-url-bar{height:6px;border-radius:4px;background:#1e293b;position:relative;margin-top:3px}
-.top-url-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:#38bdf8}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,420px),1fr));gap:11px}
 .entity-card{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);padding:14px;min-width:0}
@@ -778,6 +769,8 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
         <div class="chart-legend"><span><i style="background:#38bdf8"></i>Весь трафик</span><span><i style="background:#ef4444"></i>Плохие визитеры</span></div>
     </div>
 
+    <!-- Пара 50/50: донат риска + heatmap активности (на мобильных — вертикально) -->
+    <div class="charts-pair">
     <div class="chart-card">
         <h3>🍩 Распределение риска</h3>
         <div class="hint">Доли сущностей (IP без FP + все FP) по вердикту анализатора.</div>
@@ -792,15 +785,12 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
         <div class="hint">Пн–Вс × 0–23 ч. Ровная «полоса» в ночные часы — признак автоматизированного обхода.</div>
         <div class="chart-scroll" id="chart-heat"></div>
     </div>
-
-    <div class="chart-card" style="grid-column:1/-1">
-        <h3>🎯 Самые запрашиваемые страницы</h3>
-        <div class="hint">Топ-10 URL по общему числу запросов. Повтор одного URL одним посетителем подсвечивается в карточках ниже.</div>
-        <div id="chart-topurls"></div>
-    </div>
+    </div><!-- /.charts-pair -->
 
     <?php if ($hasPfCharts): ?>
     <!-- ===== Графики накрутки ПФ (6.1–6.4) ===== -->
+    <!-- На ПК и планшетах (≥641px) графики идут парами 50/50 через .charts-grid -->
+    <div class="charts-grid">
     <div class="chart-card">
         <h3>📅 Календарь повторов накручиваемых URL</h3>
         <div class="hint">Суммарные заходы всех ПФ-кампаний по их топ-URL за день. Красная пунктирная линия — порог аномальности. Столбики выше линии = ежедневная накрутка.</div>
@@ -814,17 +804,18 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
         <div class="chart-legend"><span><i style="background:#a78bfa"></i>Накрутка ПФ</span><span><i style="background:#ef4444"></i>К блокировке</span><span><i style="background:#fb923c"></i>Опасные</span><span><i style="background:#34d399"></i>Нормальные</span></div>
     </div>
 
-    <div class="chart-card" style="grid-column:1/-1">
+    <div class="chart-card wide">
         <h3>🕸 Пулы прокси: один Fingerprint → много IP</h3>
         <div class="hint">Каждая строка — отпечаток браузера и все IP, с которых он светился. Длинная полоса = бот-ферма с ротацией прокси; IPv6-сегменты помечены синим.</div>
         <div id="chart-fp-pool"></div>
     </div>
 
-    <div class="chart-card" style="grid-column:1/-1">
+    <div class="chart-card wide">
         <h3>🌡 «Частокол»: топ-5 кампаний × дни (заходы на накручиваемый URL)</h3>
         <div class="hint">Строки — кампании/сущности, столбцы — дни, яркость — число заходов на топ-URL. Ровная «шахматная» полоса = ежедневная накрутка.</div>
         <div class="chart-scroll" id="chart-pf-heat"></div>
     </div>
+    </div><!-- /.charts-grid -->
     <?php endif; ?>
 </div>
 
@@ -1203,19 +1194,6 @@ function drawHeat(){
   host.innerHTML=html;
 }
 
-/* ---------- Top URLs bars ---------- */
-function drawTopUrls(){
-  const host=document.getElementById('chart-topurls');
-  if(!host) return;
-  const urls=CHARTS.topUrls||[];
-  if(!urls.length){host.innerHTML='<div class="empty" style="padding:14px">Нет запросов.</div>';return}
-  const max=Math.max(...urls.map(u=>u.count));
-  host.innerHTML=urls.map(u=>
-    '<div class="top-url-row"><code title="'+esc(u.url)+'">'+esc(u.url)+'</code><span>'+u.count.toLocaleString('ru-RU')+'</span>'+
-    '<div style="grid-column:1/-1"><div class="top-url-bar"><i style="width:'+(u.count/max*100).toFixed(1)+'%"></i></div></div></div>'
-  ).join('');
-}
-
 /* ---------- Per-card interval histogram ---------- */
 function drawMiniHists(){
   document.querySelectorAll('.mini-hist').forEach(el=>{
@@ -1236,7 +1214,7 @@ function drawMiniHists(){
   });
 }
 
-drawTimeline(); drawDonut(); drawHeat(); drawTopUrls(); drawMiniHists();
+drawTimeline(); drawDonut(); drawHeat(); drawMiniHists();
 
 /* ---------- 6.1 Календарь повторов топ-URL (столбики по дням + порог) ---------- */
 function drawPfCalendar(){
