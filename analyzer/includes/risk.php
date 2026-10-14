@@ -331,7 +331,18 @@ final class RiskScorer
         $refTotal = max(1, array_sum($e['refCatCounts']));
         $extTotal = max(1, $refTotal - (int)($e['refCatCounts']['own_site'] ?? 0));
         $yandexish = (int)($e['refCatCounts']['yandex'] ?? 0) + (int)($e['refCatCounts']['yandex_proxy'] ?? 0);
-        $e['refererYandexRatio'] = round($yandexish / $extTotal * 100);
+        /*
+         * Накрутка через «переклейку»: HTTP-Referer указывает на сам сайт
+         * (own_site), но в URL запроса вшит utm_referrer/ysclid Яндекса.
+         * Такой трафик — тоже яндексовый по источнику; иначе метрика
+         * «Яндекс ref %» показывает 0% при очевидной кампании из Яндекса.
+         */
+        $proxyYish = (int)($e['refCatCounts']['own_site'] ?? 0) > 0 && ($e['utmReferrerRequests'] + $e['ysclidRequests']) > 0
+            ? min((int)$e['refCatCounts']['own_site'], (int)($e['utmReferrerRequests'] + $e['ysclidRequests']))
+            : 0;
+        $e['refererYandexRatio'] = round(($yandexish + $proxyYish) / $refTotal * 100);
+        // Чистая доля внешних яндексовых рефереров (без переклеек) — для детализации.
+        $e['refererYandexExtRatio'] = round($yandexish / $extTotal * 100);
         $e['emptyRefererRatio'] = round(((int)($e['refCatCounts']['direct'] ?? 0)) / $refTotal * 100);
         $e['ownSiteRefRatio'] = round((int)($e['refCatCounts']['own_site'] ?? 0) / $refTotal * 100);
         // «Все заходы через внешний реферер, боковых переходов нет»:

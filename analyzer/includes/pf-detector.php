@@ -454,7 +454,13 @@ final class PFCampaignDetector
                 'sessionsCount' => $sessionsCount,
                 'totalRequests' => $totalRequests,
                 'refererPattern' => $refererPattern,
-                'refererYandexRatio' => round($yish / $refTotal * 100),
+                // Доля яндексовых рефереров от ВСЕХ рефереров (внешние + свои) —
+                // историческая метрика, совместимая с risk.php.
+                'refererYandexRatio' => round($yish / $refTotalAll * 100),
+                // Доля яндексовых рефереров от ВНЕШНИХ рефереров (без переклеек
+                // собственного домена) — честный сигнал для карточки кампании.
+                'refererYandexExtRatio' => round($yish / $refTotalExt * 100),
+                'ownSiteRefRatio' => round(((int)($refCatAgg['own_site'] ?? 0)) / $refTotalAll * 100),
                 'ysclidRatio' => round($ysclidReq / max(1, $reqSum) * 100),
                 'captchaShown' => $captchaShown,
                 'captchaPassed' => $captchaPassed,

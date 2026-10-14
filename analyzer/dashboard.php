@@ -33,7 +33,7 @@ require_once __DIR__ . '/includes/pf-detector.php';
 
 /* Версия схемы кэшируемых данных. При изменении структуры сущностей /
  * кампаний / графиков нужно увеличить — старый кэш будет инвалидирован. */
-const ANALYZER_SCHEMA_VERSION = 7; // 7 — считаются HTTP-запросы (строки-URL), а не строки лога; urlCounts агрегирует хиты, а не уникальные пути
+const ANALYZER_SCHEMA_VERSION = 8; // 8 — фикс краша usort(int) в склейке сессий + честный refererYandexExtRatio (без переклеек своего домена)
 
 /* ------------------------------------------------------------------ *
  * Blocking actions (unchanged security model)
@@ -952,7 +952,7 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
                     <?php if ((int)$c['csrfErrors'] > 0): ?><span class="badge red">CSRF ×<?= (int)$c['csrfErrors'] ?></span><?php endif; ?>
                     <?php if (!empty($c['refererPattern'])): ?><span class="badge blue">ref: <?= h($c['refererPattern']) ?></span><?php endif; ?>
                     <div class="entity-value"><?= h($c['primaryType'] === 'fp' ? 'FP ' . $c['primaryValue'] : $c['primaryValue']) ?></div>
-                    <div class="url-hit">Цель: <code><?= h($c['topUrl']) ?></code> — <?= (int)$c['topUrlHits'] ?> заходов, макс <?= (int)$c['urlDayMax'] ?>/день, <?= (int)$c['topUrlDays'] ?> дн. · Яндекс ref <?= (int)$c['refererYandexRatio'] ?>% · ysclid <?= (int)$c['ysclidRatio'] ?>%</div>
+                    <div class="url-hit">Цель: <code><?= h($c['topUrl']) ?></code> — <?= (int)$c['topUrlHits'] ?> заходов, макс <?= (int)$c['urlDayMax'] ?>/день, <?= (int)$c['topUrlDays'] ?> дн. · Яндекс ref <?= (int)($c['refererYandexExtRatio'] ?? $c['refererYandexRatio']) ?>% (от внешних<?= !empty($c['ownSiteRefRatio']) ? ', свои ' . (int)$c['ownSiteRefRatio'] . '% исключены' : '' ?>) · ysclid <?= (int)$c['ysclidRatio'] ?>%</div>
                 </div>
                 <div class="risk-gauge">
                     <svg width="64" height="64" viewBox="0 0 42 42" aria-hidden="true">

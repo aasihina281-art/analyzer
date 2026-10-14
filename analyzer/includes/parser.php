@@ -385,14 +385,18 @@ if (!class_exists('AntiBotLogParser')) {
              * Результат: каждая запись = одна поведенческая сессия клиента;
              * исходные RayID сохраняются в rayIds для трассировки.
              */
-            $groups = [];
-            foreach ($sessions as $idx => $s) {
-                $groups[$s['clientKey']][] = $idx;
+            // Группировка по clientKey; ключ приводим к строке явно, чтобы
+            // numeric-подобные IP не превращались PHP в целые ключи массива.
+            $groupIdx = [];
+            $pos = 0;
+            foreach ($sessions as $s) {
+                $groupIdx[(string)($s['clientKey'] ?? '')][] = $pos++;
             }
+            $sessions = array_values($sessions); // нормализуем ключи -> int
             $merged = [];
-            foreach ($groups as $key => $idxList) {
+            foreach ($groupIdx as $key => $idxList) {
                 usort($idxList, static fn(int $a, int $b): int
-                    => strcmp($sessions[$a]['firstSeen'], $sessions[$b]['firstSeen']));
+                    => strcmp((string)$sessions[$a]['firstSeen'], (string)$sessions[$b]['firstSeen']));
                 $cur = null;
                 $curEndTs = 0;
                 foreach ($idxList as $idx) {
