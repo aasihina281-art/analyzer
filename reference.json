@@ -1,0 +1,892 @@
+{
+ "total_lines": 32032,
+ "total_requests": 4847,
+ "total_visitors": 2376,
+ "total_ips": 2102,
+ "total_fingerprints": 1139,
+ "total_captcha_shown_raw": 2442,
+ "total_captcha_shown_dedup": 1272,
+ "total_captcha_passed": 969,
+ "total_blocks": 512,
+ "total_events_other": 23262,
+ "check_sum": 32032,
+ "top20": [
+  {
+   "visitor_id": "807e26fd842a8baa",
+   "requests": 494,
+   "urls": {
+    "/wp-json/": 253,
+    "/": 241
+   },
+   "first_seen": "2026-10-10 13:17:28",
+   "last_seen": "2026-10-14 08:14:12",
+   "avg_interval_seconds": 710.2,
+   "events": {
+    "REQ": 494,
+    "REF": 494,
+    "PTR": 494,
+    "UA": 422,
+    "Displaying": 422,
+    "Found in list": 72,
+    "IP": 72,
+    "BLOCK": 72
+   },
+   "fingerprints": [],
+   "ips": [
+    "134.122.40.165"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 72
+  },
+  {
+   "visitor_id": "951356bc839d8ab1",
+   "requests": 114,
+   "urls": {
+    "/": 114
+   },
+   "first_seen": "2026-10-11 13:40:33",
+   "last_seen": "2026-10-12 11:42:15",
+   "avg_interval_seconds": 701.79,
+   "events": {
+    "REQ": 114,
+    "REF": 114,
+    "PTR": 114,
+    "UA": 113,
+    "Displaying": 113,
+    "FP": 2,
+    "FPS": 2,
+    "Show captcha": 4,
+    "Found in list": 1,
+    "IP": 1,
+    "BLOCK": 1
+   },
+   "fingerprints": [
+    "7a872ef3d4af1b888a7729a8cb474e63"
+   ],
+   "ips": [
+    "94.253.101.187"
+   ],
+   "captcha_shown_dedup": 2,
+   "captcha_passed": 0,
+   "blocks": 1
+  },
+  {
+   "visitor_id": "ebe614418b4cc02b",
+   "requests": 110,
+   "urls": {
+    "/": 29,
+    "/blog/": 81
+   },
+   "first_seen": "2026-10-11 10:19:56",
+   "last_seen": "2026-10-13 16:08:56",
+   "avg_interval_seconds": 1777.43,
+   "events": {
+    "REQ": 110,
+    "REF": 110,
+    "PTR": 110,
+    "UA": 109,
+    "Displaying": 109,
+    "FP": 5,
+    "FPS": 5,
+    "Show captcha": 10,
+    "Successfully passed": 1,
+    "Tag set": 1,
+    "Found in list": 1,
+    "IP": 1,
+    "BLOCK": 1
+   },
+   "fingerprints": [
+    "4115d5b6aa0902a0d1e17ab5fd9c2f74"
+   ],
+   "ips": [
+    "178.208.239.153"
+   ],
+   "captcha_shown_dedup": 5,
+   "captcha_passed": 1,
+   "blocks": 1
+  },
+  {
+   "visitor_id": "9b5d95ec526a6fe4",
+   "requests": 89,
+   "urls": {
+    "/wp-includes/core.php": 1,
+    "/wp-atom.php": 1,
+    "/upload.php": 1,
+    "/wp-admin/": 1,
+    "/wp-links-opml.php": 1,
+    "/manager.php": 1,
+    "/wp-content/plugins/revslider/includes/external/page/index.php": 1,
+    "/aaa.php": 1,
+    "/readme.php": 1,
+    "/wp-content/about.php": 1,
+    "/wp-admin/network/": 1,
+    "/wp-admin/css/colors/admin.php": 1,
+    "/wp-content/plugins/wp-file-manager/file_folder_manager.php": 1,
+    "/wp.php": 1,
+    "/info.php": 1,
+    "/wp-includes/config.php": 1,
+    "/k.php": 1,
+    "/wp-content/uploads/admin.php": 1,
+    "/wp-includes/module.php": 1,
+    "/upload/upload.php": 1,
+    "/wp-content/uploads/classwithtostring.php": 1,
+    "/wp-content/edit-tags.php": 1,
+    "/wp-conflg.php": 1,
+    "/wp-includes/theme-compat/chosen.php": 1,
+    "/wp-includes/html-api/chosen.php": 1,
+    "/wp-admin/js/chosen.php": 1,
+    "/wpc.php": 1,
+    "/about/function.php": 1,
+    "/wp-content/uploads/wp-file-manager-pro/": 1,
+    "/wp-includes/Text/Diff/Engine/template-singl-portfolio.php": 1,
+    "/wp-content/themes/fukasawa/inc/classes/403x.php": 1,
+    "/wp-includes/sitemaps/chosen.php": 1,
+    "/wp-content/languages/autoload_classmap.php": 1,
+    "/class.php": 1,
+    "/root.php": 1,
+    "/wp-content/edit-wolf.php": 1,
+    "/wp-content/themes/twentytwentythree/patterns/": 1,
+    "/wp-admin/maint/about.php": 1,
+    "/wp-admin/includes/update-core-time.php": 1,
+    "/file5.php": 1,
+    "/blurbs.php": 1,
+    "/wp-editor.php": 1,
+    "/wp-content/uploads/index.php": 1,
+    "/wp-admin/css/colors/index.php": 1,
+    "/priv8.php": 1,
+    "/wp-content/banners/about.php": 1,
+    "/1.php": 1,
+    "/wp-includes/Requests/network.php": 1,
+    "/atomlib.php": 1,
+    "/wp-content/uploads/about.php": 1,
+    "/radio.php": 1,
+    "/wp-includes/Requests/about.php": 1,
+    "/wp-admin.php": 1,
+    "/.well-known/content.php": 1,
+    "/wp-admin/index.php": 1,
+    "/themes.php": 1,
+    "/wp-admin/css/index.php": 1,
+    "/wp-admin/user/index.php": 1,
+    "/.well-knownold/index.php": 1,
+    "/.well-known/pki-validation/index.php": 1,
+    "/images.php": 1,
+    "/wp-includes/blocks/post-author/min.php": 1,
+    "/wp-includes/js/tinymce/themes/wp-signup.php": 1,
+    "/wp-content/languages/themes/wp-signup.php": 1,
+    "/wp-content/plugins/fileorganizer/manager/themes/about.php": 1,
+    "/wp-content/languages/woocommerce/index.php": 1,
+    "/wp-admin/css/worksec.php": 1,
+    "/wp-includes/pomo/worksec.php": 1,
+    "/wp-content/themes/twentynineteen/header-first.php": 1,
+    "/wp-includes/default-widgets-time.php": 1,
+    "/tmp/worksec.php": 1,
+    "/wp-admin/worksec.php": 1,
+    "/wp-admin/js/widgets/images/awc.php": 1,
+    "/wp-content/themes/izo/inc/customizer/mah.php": 1,
+    "/wp-content/themes/inspiro/content-index.php": 1,
+    "/wp-content/themes/twentysixteen/content-index.php": 1,
+    "/wp-admin/user/config.php": 1,
+    "/wp-admin/images/admin.php": 1,
+    "/wp-includes/blocks/avatar/config.php": 1,
+    "/wp-includes/login.php": 1,
+    "/wp-content/core.php": 1,
+    "/wp-content/common.php": 1,
+    "/wp-includes/Requests/library/library/form-builder.php": 1,
+    "/worksec.php": 1,
+    "/wp-content/plugins/shadow-bot.php": 1,
+    "/wp-menhu.php": 1,
+    "/wp-content/plugins/chosen.php": 1,
+    "/wp-includes/IXR/wp-conflg.php": 1,
+    "/wp-admin/images/chosen.php": 1
+   },
+   "first_seen": "2026-10-12 17:34:38",
+   "last_seen": "2026-10-12 17:51:15",
+   "avg_interval_seconds": 11.33,
+   "events": {
+    "REQ": 89,
+    "REF": 89,
+    "PTR": 89,
+    "UA": 89,
+    "Displaying": 89
+   },
+   "fingerprints": [],
+   "ips": [
+    "194.5.82.159"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "d0dbef07c8021cba",
+   "requests": 78,
+   "urls": {
+    "/hidemy-name/": 78
+   },
+   "first_seen": "2026-10-10 09:22:23",
+   "last_seen": "2026-10-12 23:29:53",
+   "avg_interval_seconds": 2904.55,
+   "events": {
+    "REQ": 78,
+    "REF": 78,
+    "PTR": 78,
+    "UA": 77,
+    "Displaying": 77,
+    "FP": 4,
+    "FPS": 4,
+    "Show captcha": 6,
+    "Found in list": 2,
+    "FingerPrint": 1,
+    "Added to list": 1,
+    "BLOCK": 21,
+    "IP": 1
+   },
+   "fingerprints": [
+    "0fe59db79a291f85cd6547656b35af4c",
+    "24a2f039cc0019ebf05ee70651331d37"
+   ],
+   "ips": [
+    "77.45.243.236"
+   ],
+   "captcha_shown_dedup": 3,
+   "captcha_passed": 0,
+   "blocks": 21
+  },
+  {
+   "visitor_id": "8e7f7decf51f410e",
+   "requests": 52,
+   "urls": {
+    "/": 5,
+    "/phpinfo.php": 1,
+    "/info.php": 1,
+    "/php.php": 1,
+    "/i.php": 1,
+    "/pi.php": 1,
+    "/pinfo.php": 1,
+    "/test.php": 1,
+    "/phpinfo": 1,
+    "/p.php": 1,
+    "/debug.php": 1,
+    "/admin/phpinfo.php": 1,
+    "/test/phpinfo.php": 1,
+    "/dev/phpinfo.php": 1,
+    "/old/phpinfo.php": 1,
+    "/tmp/phpinfo.php": 1,
+    "/public/phpinfo.php": 1,
+    "/info": 1,
+    "/php-info.php": 1,
+    "/phpversion.php": 1,
+    "/_phpinfo.php": 1,
+    "/old_phpinfo.php": 1,
+    "/server-info.php": 1,
+    "/server-status.php": 1,
+    "/_profiler/phpinfo": 1,
+    "/_environment": 1,
+    "/webroot/index.php/_environment": 1,
+    "/webroot/_environment": 1,
+    "/mail/phpinfo.php": 1,
+    "/cpanel/phpinfo.php": 1,
+    "/hosting/phpinfo.php": 1,
+    "/webmail/phpinfo.php": 1,
+    "/smtp/phpinfo.php": 1,
+    "/phpinfo.php~": 1,
+    "/staging/phpinfo.php": 1,
+    "/beta/phpinfo.php": 1,
+    "/uat/phpinfo.php": 1,
+    "/qa/phpinfo.php": 1,
+    "/preview/phpinfo.php": 1,
+    "/www/phpinfo.php": 1,
+    "/htdocs/phpinfo.php": 1,
+    "/public_html/phpinfo.php": 1,
+    "/site/phpinfo.php": 1,
+    "/docs/phpinfo.php": 1,
+    "/wp-admin/phpinfo.php": 1,
+    "/administrator/phpinfo.php": 1,
+    "/core/phpinfo.php": 1,
+    "/includes/phpinfo.php": 1
+   },
+   "first_seen": "2026-10-13 22:03:09",
+   "last_seen": "2026-10-13 22:03:45",
+   "avg_interval_seconds": 1.44,
+   "events": {
+    "REQ": 52,
+    "REF": 52,
+    "PTR": 52,
+    "Found in list": 52,
+    "Indexing robot": 52
+   },
+   "fingerprints": [],
+   "ips": [
+    "34.154.40.146"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "d23a06a95775af0c",
+   "requests": 51,
+   "urls": {
+    "/admin.php": 1,
+    "/public/css.php": 1,
+    "/classwithtostring.php": 1,
+    "/wp-content/admin.php": 1,
+    "/gelay.php": 1,
+    "/wp-admin/images/admin.php": 1,
+    "/adminfuns.php": 1,
+    "/admin/controller/extension/extension/ultra.php": 1,
+    "/about.php": 1,
+    "/wp-admin/css/colors/index.php": 1,
+    "/f35.php": 1,
+    "/inputs.php": 1,
+    "/alfa.php": 1,
+    "/lock360.php": 1,
+    "/flower.php": 1,
+    "/13.php": 1,
+    "/cc.php": 1,
+    "/gecko-new.php": 1,
+    "/wp-content.php.php": 1,
+    "/01.php": 1,
+    "/lv.php": 1,
+    "/new.php": 1,
+    "/222.php": 1,
+    "/chosen.php": 1,
+    "/info.php": 1,
+    "/wp-includes/ID3/index.php": 1,
+    "/wp-admin/network/index.php": 1,
+    "/k.php": 1,
+    "/403.php": 1,
+    "/wp-content/cache/": 1,
+    "/gecko.php": 1,
+    "/aa.php": 1,
+    "/0x.php": 1,
+    "/zxz.php": 1,
+    "/www.php": 1,
+    "/wicked.php": 1,
+    "/HLA-dd.php": 1,
+    "/wp-content/upgrade/index.php": 1,
+    "/cah.php": 1,
+    "/system_log.php": 1,
+    "/wp-admin/user/index.php": 1,
+    "/ioxi-o.php": 1,
+    "/abc.php": 1,
+    "/akcc.php": 1,
+    "/wk/index.php": 1,
+    "/1.php": 1,
+    "/wp-content/x/index.php": 1,
+    "/as.php": 1,
+    "/wp-content/themes/admin.php": 1,
+    "/wp-includes/blocks/shortcode/index.php": 1,
+    "/an.php": 1
+   },
+   "first_seen": "2026-10-14 06:44:47",
+   "last_seen": "2026-10-14 06:45:10",
+   "avg_interval_seconds": 1.0,
+   "events": {
+    "REQ": 51,
+    "REF": 51,
+    "PTR": 51,
+    "UA": 51,
+    "Displaying": 51
+   },
+   "fingerprints": [],
+   "ips": [
+    "13.70.110.189"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "28cd0821dd839d39",
+   "requests": 39,
+   "urls": {
+    "/": 5,
+    "/graphql": 1,
+    "/blog/": 1,
+    "/api/graphql": 1,
+    "/v1/graphql": 1,
+    "/portfolio/": 1,
+    "/video/": 1,
+    "/telegram-ne-rabotaet-dazhe-s-vpn/": 1,
+    "/subscribing-account/edit-profile/": 1,
+    "/subscribing-account/": 1,
+    "/author/viktor/": 1,
+    "/input/": 3,
+    "/dashboard": 1,
+    "/account": 1,
+    "/login": 1,
+    "/app": 1,
+    "/dashboard/settings": 1,
+    "/auth": 1,
+    "/portal": 1,
+    "/signup": 1,
+    "/settings": 1,
+    "/dashboard/billing": 1,
+    "/sign-in": 1,
+    "/console": 1,
+    "/reset-password": 1,
+    "/backoffice": 1,
+    "/settings/api-keys": 1,
+    "/billing": 1,
+    "/panel": 1,
+    "/user/login": 1,
+    "/onboarding": 1,
+    "/workspace": 1,
+    "/wp-admin/": 1
+   },
+   "first_seen": "2026-10-14 01:51:09",
+   "last_seen": "2026-10-14 01:51:48",
+   "avg_interval_seconds": 3.55,
+   "events": {
+    "REQ": 39,
+    "REF": 39,
+    "PTR": 39,
+    "Found in list": 39,
+    "Indexing robot": 39
+   },
+   "fingerprints": [],
+   "ips": [
+    "34.126.95.101"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "53e498f58fdb9178",
+   "requests": 35,
+   "urls": {
+    "/telegram-ne-rabotaet-v-rossii-edinstvennyj-rabochij-sposob-dlya-android": 8,
+    "/telegram-ne-rabotaet-dazhe-s-vpn": 13,
+    "/ffmpeg-windows": 2,
+    "/hidemy-name/comment-page-6": 1,
+    "/go/e3df8d5be8/": 2,
+    "/hidemy-name": 5,
+    "/kak-sozdat-pryamuyu-ssylku": 1,
+    "/sluzhby-po-kontraktu": 1,
+    "/kak-razblokirovat-youtube-instagram-i-telegram-v-rossii": 2
+   },
+   "first_seen": "2026-10-10 07:41:35",
+   "last_seen": "2026-10-14 07:39:48",
+   "avg_interval_seconds": 10161.56,
+   "events": {
+    "REQ": 35,
+    "REF": 35,
+    "PTR": 35,
+    "Found in list": 35,
+    "IP": 35,
+    "BLOCK": 35
+   },
+   "fingerprints": [],
+   "ips": [
+    "37.230.131.94"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 35
+  },
+  {
+   "visitor_id": "e1f831d5638ae42a",
+   "requests": 34,
+   "urls": {
+    "/wp-content/plugins/hellopress/wp_filemanager.php": 3,
+    "/this_is_a_new_hello_world.php": 3,
+    "/wp-fure.php": 1,
+    "/sagor.php": 1,
+    "/admin.php/min.php": 1,
+    "/wk/wper.php": 1,
+    "/css/mini.php": 1,
+    "/gt5.php": 1,
+    "/admin.php/nox.php": 1,
+    "/admin.php/hsduih.php": 1,
+    "/css/upload.php": 1,
+    "/admin.php/700.php": 1,
+    "/nakrip.php": 1,
+    "/wp-includes/customize/about.php": 1,
+    "/xxx.php": 1,
+    "/wp-content/plugins/xt/php": 1,
+    "/alfanew.php": 1,
+    "/.well-known/pki-validation/index.php": 1,
+    "/wp-admin/options.php": 1,
+    "/wp-admin/includes/about.php": 1,
+    "/gebase.php": 1,
+    "/privacy.php": 1,
+    "/css/xmrlpc.php": 1,
+    "/classwithtostring.php": 1,
+    "/wp-content/plugins/simple/simple.php": 1,
+    "/wp-content/uploads/cong.php": 1,
+    "/0x.php": 1,
+    "/wp-back.php": 1,
+    "/gtc.php": 1,
+    "/dronishness.php": 1
+   },
+   "first_seen": "2026-10-13 16:18:00",
+   "last_seen": "2026-10-14 03:08:28",
+   "avg_interval_seconds": 1219.62,
+   "events": {
+    "REQ": 34,
+    "REF": 34,
+    "PTR": 34,
+    "UA": 34,
+    "Empty UA": 34,
+    "BLOCK": 34
+   },
+   "fingerprints": [],
+   "ips": [
+    "52.141.3.247"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 34
+  },
+  {
+   "visitor_id": "45ebdcd413d20f73",
+   "requests": 30,
+   "urls": {
+    "/gpedit": 3,
+    "/tariff-sharing": 3,
+    "/tariff-sharing/": 2,
+    "/gpedit/": 2,
+    "/hypestat": 3,
+    "/hypestat/": 2,
+    "/tag/ai": 2,
+    "/tag/dell": 2,
+    "/tag/parol": 2,
+    "/tag/sajty": 2,
+    "/tag/trafik": 2,
+    "/windows-10": 3,
+    "/windows-10/": 2
+   },
+   "first_seen": "2026-10-10 13:57:07",
+   "last_seen": "2026-10-10 13:57:22",
+   "avg_interval_seconds": 1.36,
+   "events": {
+    "REQ": 30,
+    "REF": 30,
+    "PTR": 30,
+    "Found in list": 30,
+    "Indexing robot": 30
+   },
+   "fingerprints": [],
+   "ips": [
+    "34.122.173.216"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "af7ac8b69caf1ac6",
+   "requests": 30,
+   "urls": {
+    "/": 1,
+    "/rest/api/1.0/application-properties": 1,
+    "/bedrock/config.toml": 1,
+    "/api/v1/bedrock": 1,
+    "/foundation-models": 1,
+    "/llm/credentials": 1,
+    "/aws/bedrock": 1,
+    "/api/aws/bedrock": 1,
+    "/api/v1/aws/bedrock": 1,
+    "/bedrockruntime": 1,
+    "/config/bedrock.toml": 1,
+    "/api/ai/config": 1,
+    "/api/config/ai": 1,
+    "/invoke": 1,
+    "/api/invoke": 1,
+    "/api/model/invoke": 1,
+    "/v1/model/invoke": 1,
+    "/api/inference-profiles": 1,
+    "/api/foundation-models": 1,
+    "/api/v1/foundation-models": 1,
+    "/.ebextensions/": 1,
+    "/main.tf": 1,
+    "/credentials": 1,
+    "/cloudformation/": 1,
+    "/infra/terraform.tfstate": 1,
+    "/infrastructure/terraform.tfstate": 1,
+    "/deploy/terraform.tfstate": 1,
+    "/terraform/terraform.tfstate": 1,
+    "/api/bedrock": 1,
+    "/ai/credentials": 1
+   },
+   "first_seen": "2026-10-10 16:31:06",
+   "last_seen": "2026-10-10 16:31:17",
+   "avg_interval_seconds": 1.57,
+   "events": {
+    "REQ": 30,
+    "REF": 30,
+    "PTR": 30,
+    "UA": 30,
+    "Displaying": 30
+   },
+   "fingerprints": [],
+   "ips": [
+    "93.123.109.101"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "72c343c12cc206af",
+   "requests": 28,
+   "urls": {
+    "/contextflow": 3,
+    "/dell-inspiron-n5110": 3,
+    "/contextflow/": 2,
+    "/dell-inspiron-n5110/": 2,
+    "/cookie": 3,
+    "/cookie/": 2,
+    "/tag/yota": 2,
+    "/tag/marketing": 2,
+    "/tag/tarify": 2,
+    "/tag/oplata": 2,
+    "/telegram-video": 3,
+    "/telegram-video/": 2
+   },
+   "first_seen": "2026-10-10 13:57:12",
+   "last_seen": "2026-10-10 13:57:27",
+   "avg_interval_seconds": 1.67,
+   "events": {
+    "REQ": 28,
+    "REF": 28,
+    "PTR": 28,
+    "Found in list": 28,
+    "Indexing robot": 28
+   },
+   "fingerprints": [],
+   "ips": [
+    "23.251.146.115"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "55c0c2eac3e77fb0",
+   "requests": 26,
+   "urls": {
+    "/wp-content/plugins/hellopress/wp_filemanager.php": 2,
+    "/this_is_a_new_hello_world.php": 2,
+    "/index/function.php": 2,
+    "/2.php": 1,
+    "/makeasmtp.php": 1,
+    "/admin.php": 1,
+    "/kir.php": 1,
+    "/wp-admin/includes/class-wp-site-list.php": 2,
+    "/gaxby.php": 1,
+    "/wp-trbacks.php": 1,
+    "/1ac.php": 1,
+    "/wp-ss.php": 1,
+    "/dejavu.php": 1,
+    "/1.php": 1,
+    "/als.php": 1,
+    "/shiny.php": 1,
+    "/a.php": 1,
+    "/wp-manager.php": 1,
+    "/opsh.php": 1,
+    "/nex.php": 1,
+    "/bcbl.php": 1,
+    "/wp-B-G.php": 1
+   },
+   "first_seen": "2026-10-11 09:05:19",
+   "last_seen": "2026-10-12 17:19:16",
+   "avg_interval_seconds": 4834.88,
+   "events": {
+    "REQ": 26,
+    "REF": 26,
+    "PTR": 26,
+    "UA": 26,
+    "Empty UA": 26,
+    "BLOCK": 26
+   },
+   "fingerprints": [],
+   "ips": [
+    "20.58.186.118"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 26
+  },
+  {
+   "visitor_id": "1d4f91b885590367",
+   "requests": 26,
+   "urls": {
+    "/telegram-tg-ws-proxy/": 26
+   },
+   "first_seen": "2026-10-12 09:16:14",
+   "last_seen": "2026-10-12 12:27:03",
+   "avg_interval_seconds": 457.96,
+   "events": {
+    "REQ": 26,
+    "REF": 26,
+    "PTR": 26,
+    "UA": 26,
+    "Displaying": 26
+   },
+   "fingerprints": [],
+   "ips": [
+    "91.237.144.194"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "8b0c093f7fd680d2",
+   "requests": 25,
+   "urls": {
+    "/yandex-direct-link/": 25
+   },
+   "first_seen": "2026-10-10 11:07:02",
+   "last_seen": "2026-10-13 17:54:18",
+   "avg_interval_seconds": 11818.17,
+   "events": {
+    "REQ": 25,
+    "REF": 25,
+    "PTR": 25,
+    "UA": 24,
+    "Displaying": 24,
+    "FP": 1,
+    "FPS": 1,
+    "Show captcha": 2,
+    "Successfully passed": 1,
+    "Tag set": 1,
+    "Found in list": 1,
+    "IP": 1,
+    "BLOCK": 1
+   },
+   "fingerprints": [
+    "efdf117ff0820991dce228fc9d8ed750"
+   ],
+   "ips": [
+    "79.164.217.70"
+   ],
+   "captcha_shown_dedup": 1,
+   "captcha_passed": 1,
+   "blocks": 1
+  },
+  {
+   "visitor_id": "e08990a875892fed",
+   "requests": 23,
+   "urls": {
+    "/telegram-ne-rabotaet-dazhe-s-vpn/": 23
+   },
+   "first_seen": "2026-10-11 18:37:43",
+   "last_seen": "2026-10-11 21:00:51",
+   "avg_interval_seconds": 390.36,
+   "events": {
+    "REQ": 23,
+    "REF": 23,
+    "PTR": 23,
+    "UA": 23,
+    "Displaying": 23,
+    "FP": 2,
+    "FPS": 2,
+    "Show captcha": 4
+   },
+   "fingerprints": [
+    "ca341177a9dae5aaa30afd6a1248828e"
+   ],
+   "ips": [
+    "5.18.232.251"
+   ],
+   "captcha_shown_dedup": 2,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "413d6e2336cf242a",
+   "requests": 22,
+   "urls": {
+    "/kak-smotret-yutub-bez-vpn-v-rossii-v-2025-godu/": 16,
+    "/wordpress-robots-txt/": 2,
+    "/telegram-ne-rabotaet-dazhe-s-vpn/": 4
+   },
+   "first_seen": "2026-10-10 09:00:47",
+   "last_seen": "2026-10-13 22:34:59",
+   "avg_interval_seconds": 30805.2,
+   "events": {
+    "REQ": 22,
+    "REF": 22,
+    "PTR": 22,
+    "Found in list": 22,
+    "IP": 22,
+    "BLOCK": 22
+   },
+   "fingerprints": [],
+   "ips": [
+    "152.89.196.74"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 22
+  },
+  {
+   "visitor_id": "9cb621086e3aa4d6",
+   "requests": 22,
+   "urls": {
+    "/telegram-tg-ws-proxy": 3,
+    "/telegram-tg-ws-proxy/": 2,
+    "/reklama-v-poiske": 3,
+    "/reklama-v-poiske/": 2,
+    "/gosuslugi": 3,
+    "/tag/bios": 2,
+    "/gosuslugi/": 2,
+    "/paid-memberships-pro-i-yumoney": 3,
+    "/paid-memberships-pro-i-yumoney/": 2
+   },
+   "first_seen": "2026-10-10 13:57:00",
+   "last_seen": "2026-10-10 13:57:24",
+   "avg_interval_seconds": 1.85,
+   "events": {
+    "REQ": 22,
+    "REF": 22,
+    "PTR": 22,
+    "Found in list": 22,
+    "Indexing robot": 22
+   },
+   "fingerprints": [],
+   "ips": [
+    "34.31.203.120"
+   ],
+   "captcha_shown_dedup": 0,
+   "captcha_passed": 0,
+   "blocks": 0
+  },
+  {
+   "visitor_id": "cdcd8ecb5a67892c",
+   "requests": 20,
+   "urls": {
+    "/kak-smotret-yutub-bez-vpn-v-rossii-v-2025-godu/": 20
+   },
+   "first_seen": "2026-10-10 13:58:09",
+   "last_seen": "2026-10-12 11:36:39",
+   "avg_interval_seconds": 8647.53,
+   "events": {
+    "REQ": 20,
+    "REF": 20,
+    "PTR": 20,
+    "UA": 20,
+    "Displaying": 20,
+    "FP": 2,
+    "FPS": 2,
+    "Show captcha": 4,
+    "Successfully passed": 1,
+    "Tag set": 1
+   },
+   "fingerprints": [
+    "1f774be4cdfc9f28f696b206a0d66295"
+   ],
+   "ips": [
+    "46.8.44.151"
+   ],
+   "captcha_shown_dedup": 2,
+   "captcha_passed": 1,
+   "blocks": 0
+  }
+ ]
+}
