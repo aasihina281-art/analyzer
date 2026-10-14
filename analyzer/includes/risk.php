@@ -78,7 +78,10 @@ final class RiskScorer
         $e =& $bucket[$key];
 
         $e['sessions']++;
-        $e['requests'] += (int)($session['requestCount'] ?? 0);
+        $e['requests'] += (int)($session['requestCount'] ?? 0);       // только REQ-строки
+        $e['blockLines'] += (int)($session['blockLineCount'] ?? 0);   // только BLOCK-строки
+        $e['captchaShownEvents'] += (int)($session['captchaShowLineCount'] ?? 0); // CAPTCHA-строки
+        $e['rayIds'] += (int)($session['rayCount'] ?? 1);             // HTTP-запросов Cloudflare
         $e['captchaShown'] += (int)($session['captchaShowCount'] ?? 0);
         $e['verificationPages'] += (int)($session['verificationPageCount'] ?? 0);
         $e['captchaPassed'] += (int)($session['captchaPassCount'] ?? 0);
@@ -183,7 +186,10 @@ final class RiskScorer
             'type' => $type,
             'value' => $value,
             'sessions' => 0,
-            'requests' => 0,
+            'requests' => 0,        // только REQ-строки (обращения к URL)
+            'blockLines' => 0,      // только BLOCK-строки (страницы блокировки)
+            'captchaShownEvents' => 0, // CAPTCHA-строки (показано + пройдено)
+            'rayIds' => 0,          // число RayID (HTTP-запросов Cloudflare)
             'captchaShown' => 0,
             'verificationPages' => 0,
             'captchaPassed' => 0,
@@ -315,11 +321,19 @@ final class RiskScorer
         $e['topPathDaySeries'] = $topPathDaysMap;   // date => hits
         unset($e['pathDayHits'], $e['urlDays'], $e['dayHours']);
 
-        // Доли реферерных категорий от всех REF-событий
+        // ---- Доли реферерных категорий от всех REF-событий ----
+        /*
+         * ВАЖНО: 'own_site' — это реферер с собственного домена (переклейка
+         * накрутчика: бот идёт по ссылке, уже побывав на самом сайте).
+         * Он НЕ учитывается как «яндекс-трафик». Настоящий источник
+         * захода берём из utm_referrer/ysclid внутри URL запроса.
+         */
         $refTotal = max(1, array_sum($e['refCatCounts']));
+        $extTotal = max(1, $refTotal - (int)($e['refCatCounts']['own_site'] ?? 0));
         $yandexish = (int)($e['refCatCounts']['yandex'] ?? 0) + (int)($e['refCatCounts']['yandex_proxy'] ?? 0);
-        $e['refererYandexRatio'] = round($yandexish / $refTotal * 100);
+        $e['refererYandexRatio'] = round($yandexish / $extTotal * 100);
         $e['emptyRefererRatio'] = round(((int)($e['refCatCounts']['direct'] ?? 0)) / $refTotal * 100);
+        $e['ownSiteRefRatio'] = round((int)($e['refCatCounts']['own_site'] ?? 0) / $refTotal * 100);
         // «Все заходы через внешний реферер, боковых переходов нет»:
         // почти нет прямых заходов при наличии внешних REF-событий
         $e['allReferralNoSide'] = ($yandexish >= 3 && $e['emptyRefererRatio'] <= 10);
@@ -339,6 +353,7 @@ final class RiskScorer
             ['yandex' => 0, 'yandex_proxy' => 0, 'google' => 0, 'vk' => 0, 'other' => 0, 'direct' => 0],
             $e['refCatCounts']
         );
+        unset($catCounts['own_site']); // собственный домен — не источник трафика
         $singleMax = max($catCounts);
         if ($yandexish >= $singleMax && $yandexish > 0) {
             $domCat = ($catCounts['yandex_proxy'] > $catCounts['yandex']) ? 'yandex_proxy' : 'yandex';
@@ -346,7 +361,14 @@ final class RiskScorer
             arsort($catCounts);
             $domCat = (string)array_key_first($catCounts);
         }
-        $e['refererPattern'] = ($e['topPathHasYsclid'] && in_array($domCat, ['yandex', 'yandex_proxy'], true))
+        /*
+         * Если HTTP-Referer везде «свой» (переклейка), но в URL есть
+         * utm_referrer/ysclid яндексовых зеркал — источник всё-таки Яндекс.
+         */
+        if (($domCat === 'direct' || $domCat === 'other') && $e['utmReferrerRequests'] + $e['ysclidRequests'] >= max(3, (int)$e['requests'] * 0.5)) {
+            $domCat = 'yandex_proxy';
+        }
+        $e['refererPattern'] = (($e['topPathHasYsclid'] || !empty($e['pathUt'][$topPath])) && in_array($domCat, ['yandex', 'yandex_proxy'], true))
             ? 'yandex_with_ysclid' : $domCat;
 
         // ---- Captcha reaction speed ----

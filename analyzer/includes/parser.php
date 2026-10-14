@@ -20,6 +20,14 @@ if (!class_exists('AntiBotLogParser')) {
         private const MAX_EVENTS_PER_SESSION = 1500;
 
         /**
+         * Пауза между запросами одного клиента (IP+UA+FP), разрывающая
+         * сессию. RayID — это ID отдельного HTTP-запроса Cloudflare, а не
+         * сессия посетителя: реальные клиентские сессии склеиваются из
+         * RayID-записей именно по этому правилу.
+         */
+        public const SESSION_GAP_SEC = 1800; // 30 минут
+
+        /**
          * Классификация реферера по категориям. Возвращает одну из:
          * 'yandex' | 'google' | 'vk' | 'yandex_proxy' | 'direct' | 'other'.
          * Использует карту хостов из pf-config (если подключён) + жёсткие
@@ -111,6 +119,9 @@ if (!class_exists('AntiBotLogParser')) {
                 'blocked' => false,
                 'blockCount' => 0,
                 'blockEvidence' => [],
+                'requestLineCount' => 0,   // REQ-строки (запросы к URL)
+                'blockLineCount' => 0,     // BLOCK-строки (страница блокировки и т.п.)
+                'captchaShowLineCount' => 0, // CAPTCHA-строки («показано» + «пройдено»)
                 'isRobot' => false,
                 'robotName' => '',
                 'isWhitelisted' => false,
@@ -197,6 +208,7 @@ if (!class_exists('AntiBotLogParser')) {
                     // "Displaying the verification page", "Tag set", "Found in list" и т.д.)
                     // — служебные события того же запроса, они НЕ увеличивают requestCount.
                     $s['requestCount']++;
+                    $s['requestLineCount']++;
 
                     // Нормализуем URL до пути без query-строки: одна и та же страница,
                     // приходящая с разными ysclid/utm_referrer, — это ПОВТОР одного URL.
@@ -239,6 +251,22 @@ if (!class_exists('AntiBotLogParser')) {
                         }
                         // Категория реферера: yandex / google / vk / yandex_proxy / other
                         $cat = self::classifyReferrer($ref);
+                        /*
+                         * Реферер с собственного домена — это НЕ внешний переход.
+                         * Накрутка ПФ маскируется так: запрос приходит уже с
+                         * ?utm_referrer=https%3A%2F%2Fzsay.ru%2F... внутри URL,
+                         * а HTTP-Referer при этом указывает на сам сайт
+                         * (бот «переклеивает» ссылку). Такой REF не должен
+                         * считаться яндексовым — иначе метрика врёт.
+                         */
+                        if ($cat === 'yandex_proxy') {
+                            $reqHost = strtolower((string)preg_replace('/:\d+$/', '', (string)($_SERVER['HTTP_HOST'] ?? '')));
+                            if ($reqHost === '') $reqHost = 'zsay.ru'; // дефолт проекта
+                            $refHost = strtolower((string)parse_url($ref, PHP_URL_HOST));
+                            if ($refHost === $reqHost || str_ends_with($refHost, '.' . $reqHost)) {
+                                $cat = 'own_site';
+                            }
+                        }
                         $s['refCats'][$cat] = ($s['refCats'][$cat] ?? 0) + 1;
                     }
                 } elseif ($first === 'E' && (stripos($message, 'CSRF-token expired') !== false
@@ -283,10 +311,12 @@ if (!class_exists('AntiBotLogParser')) {
                 } elseif ($first === 'S') {
                     if (preg_match('/^Show captcha\b/i', $message)) {
                         $s['captchaShowCount']++;
+                        $s['captchaShowLineCount']++;
                         if (count($s['showTimes']) < 100) $s['showTimes'][] = $timestamp;
                         if ($message !== '') $s['captchaReason'] = $message;
                     } elseif (stripos($message, 'Successfully passed the captcha') !== false) {
                         $s['captchaPassCount']++;
+                        $s['captchaShowLineCount']++;
                         $s['captchaPassed'] = true;
                         if (count($s['passTimes']) < 100) $s['passTimes'][] = $timestamp;
                     }
@@ -303,6 +333,7 @@ if (!class_exists('AntiBotLogParser')) {
                 ) {
                     $s['blocked'] = true;
                     $s['blockCount']++;
+                    $s['blockLineCount']++;
                     if (count($s['blockEvidence']) < 10) {
                         $s['blockEvidence'][] = ['timestamp' => $timestamp, 'message' => $message];
                     }
@@ -322,6 +353,22 @@ if (!class_exists('AntiBotLogParser')) {
                 arsort($session['urls']);   // keep url => count, sorted desc
                 $session['userAgents'] = array_keys($session['userAgents']);
                 $session['referrers'] = array_keys($session['referrers']);
+
+                /*
+                 * --- Пересчёт «сессий» в настоящем смысле слова ---
+                 * RayID — это ID одного HTTP-запроса Cloudflare, а НЕ сессия
+                 * посетителя. Реальная сессия клиента = связка IP + UA + FP,
+                 * разбитая по времени простоя (по умолчанию 30 минут).
+                 * Один клиент, ходящий на сайт весь день, — ОДНА сессия,
+                 * даже если его запросы имеют десятки разных RayID.
+                 */
+                $spanSec = max(0, strtotime(str_replace(' ', 'T', $session['lastSeen']))
+                                   - strtotime(str_replace(' ', 'T', $session['firstSeen'])));
+                $session['durationSec'] = $spanSec;
+                $session['clientKey'] = $session['ip'] . '|' . implode(',', $session['userAgents'])
+                    . '|' . ($session['fingerprint'] ?: '-');
+                $session['isProxyRay'] = ($session['requestCount'] <= 1 && $spanSec < 5);
+
                 // pathFlags compacted to a list of [path, ys, ut] triples (JSON-friendly)
                 $flags = [];
                 foreach ($session['pathFlags'] as $p => $fl) {
@@ -330,6 +377,111 @@ if (!class_exists('AntiBotLogParser')) {
                 $session['pathFlags'] = $flags;
             }
             unset($session);
+
+            /*
+             * --- Склейка RayID-записей в реальные клиентские сессии ---
+             * Группируем по clientKey (IP+UA+FP), внутри группы сортируем по
+             * времени и режем цепочку при простое > SESSION_GAP_SEC.
+             * Результат: каждая запись = одна поведенческая сессия клиента;
+             * исходные RayID сохраняются в rayIds для трассировки.
+             */
+            $groups = [];
+            foreach ($sessions as $idx => $s) {
+                $groups[$s['clientKey']][] = $idx;
+            }
+            $merged = [];
+            foreach ($groups as $key => $idxList) {
+                usort($idxList, static fn(int $a, int $b): int
+                    => strcmp($sessions[$a]['firstSeen'], $sessions[$b]['firstSeen']));
+                $cur = null;
+                $curEndTs = 0;
+                foreach ($idxList as $idx) {
+                    $s = $sessions[$idx];
+                    $startTs = strtotime(str_replace(' ', 'T', $s['firstSeen']));
+                    $endTs   = strtotime(str_replace(' ', 'T', $s['lastSeen']));
+                    if ($cur === null || ($startTs - $curEndTs) > self::SESSION_GAP_SEC) {
+                        if ($cur !== null) $merged[] = $cur;
+                        $cur = $s;
+                        $cur['rayIds'] = [$s['rayId']];
+                        $cur['rayCount'] = 1;
+                    } else {
+                        // присоединяем запрос к текущей сессии клиента
+                        $cur['lastSeen'] = max($cur['lastSeen'], $s['lastSeen']);
+                        $cur['requestCount'] += (int)$s['requestCount'];
+                        $cur['logLineCount'] += (int)$s['logLineCount'];
+                        $cur['captchaShowCount'] += $s['captchaShowCount'];
+                        $cur['verificationPageCount'] += $s['verificationPageCount'];
+                        $cur['captchaPassCount'] += $s['captchaPassCount'];
+                        $cur['captchaPassed'] = $cur['captchaPassed'] || $s['captchaPassed'];
+                        $cur['blocked'] = $cur['blocked'] || $s['blocked'];
+                        $cur['blockCount'] += (int)$s['blockCount'];
+                        $cur['requestLineCount'] += (int)$s['requestLineCount'];
+                        $cur['blockLineCount'] += (int)$s['blockLineCount'];
+                        $cur['captchaShowLineCount'] += (int)$s['captchaShowLineCount'];
+                        $cur['csrfErrors'] += (int)$s['csrfErrors'];
+                        $cur['ysclidCount'] += (int)$s['ysclidCount'];
+                        $cur['utmReferrerCount'] += (int)$s['utmReferrerCount'];
+                        $cur['emptyReferrerCount'] += (int)$s['emptyReferrerCount'];
+                        $cur['tagSet'] = $cur['tagSet'] || $s['tagSet'];
+                        $cur['graylisted'] = $cur['graylisted'] || $s['graylisted'];
+                        $cur['inBlacklistIp'] = $cur['inBlacklistIp'] || $s['inBlacklistIp'];
+                        $cur['inBlacklistFp'] = $cur['inBlacklistFp'] || $s['inBlacklistFp'];
+                        $cur['rayIds'][] = $s['rayId'];
+                        $cur['rayCount']++;
+                        foreach ($s['urls'] as $p => $c)      $cur['urls'][$p] = ($cur['urls'][$p] ?? 0) + $c;
+                        foreach ($s['refCats'] as $p => $c)   $cur['refCats'][$p] = ($cur['refCats'][$p] ?? 0) + $c;
+                        foreach ($s['requestTimes'] as $t)    $cur['requestTimes'][] = $t;
+                        foreach ($s['showTimes'] as $t)       $cur['showTimes'][] = $t;
+                        foreach ($s['passTimes'] as $t)       $cur['passTimes'][] = $t;
+                        foreach ($s['fpsValues'] as $v)       $cur['fpsValues'][] = $v;
+                        foreach ($s['fingerprints'] as $fp)   $cur['fingerprints'][$fp] = true;
+                        foreach ($s['blockEvidence'] as $ev)  $cur['blockEvidence'][] = $ev;
+                        foreach ($s['urlPathDays'] as $p => $days) {
+                            foreach ($days as $d => $c) $cur['urlPathDays'][$p][$d] = ($cur['urlPathDays'][$p][$d] ?? 0) + $c;
+                        }
+                        foreach ($s['pathFlags'] as $fl) {
+                            if (!isset($cur['pathFlags'][$fl['path']])) {
+                                $cur['pathFlags'][$fl['path']] = ['ys' => false, 'ut' => false];
+                            }
+                            if ($fl['ys']) $cur['pathFlags'][$fl['path']]['ys'] = true;
+                            if ($fl['ut']) $cur['pathFlags'][$fl['path']]['ut'] = true;
+                        }
+                        if ($cur['captchaReason'] === '') $cur['captchaReason'] = $s['captchaReason'];
+                    }
+                    $curEndTs = max($curEndTs, $endTs);
+                }
+                if ($cur !== null) $merged[] = $cur;
+            }
+
+            // Нормализуем склейные поля обратно к формату finalize()
+            foreach ($merged as &$m) {
+                $m['fingerprints'] = array_keys($m['fingerprints']);
+                if (!$m['fingerprints'] && $m['fingerprint'] !== '') $m['fingerprints'] = [$m['fingerprint']];
+                $m['fingerprint'] = $m['fingerprints'][0] ?? '';
+                arsort($m['urls']);
+                $m['requestTimes'] = array_values(array_unique($m['requestTimes']));
+                sort($m['requestTimes'], SORT_STRING);
+                $m['showTimes'] = array_slice($m['showTimes'], 0, self::MAX_EVENTS_PER_SESSION);
+                $m['passTimes'] = array_slice($m['passTimes'], 0, 100);
+                $m['fpsValues'] = array_slice($m['fpsValues'], 0, 30);
+                $m['blockEvidence'] = array_slice($m['blockEvidence'], 0, 10);
+                $m['userAgents'] = array_slice($m['userAgents'], 0, 10);
+                $m['referrers'] = array_slice(array_keys($m['referrers']), 0, 60);
+                $flags = [];
+                foreach ((array)$m['pathFlags'] as $p => $fl) {
+                    $flags[] = ['path' => (string)$p, 'ys' => (bool)$fl['ys'], 'ut' => (bool)$fl['ut']];
+                }
+                $m['pathFlags'] = $flags;
+                $span = max(0, strtotime(str_replace(' ', 'T', $m['lastSeen']))
+                               - strtotime(str_replace(' ', 'T', $m['firstSeen'])));
+                $m['durationSec'] = $span;
+                // Клиентская сессия «прокси-лучок», если это был один RayID-запрос без истории
+                $m['isProxyRay'] = ($m['rayCount'] <= 1 && $span < 5);
+            }
+            unset($m);
+
+            usort($merged, static fn(array $a, array $b): int => strcmp($a['firstSeen'], $b['firstSeen']));
+            $sessions = $merged;
 
             if ($needle !== null) {
                 $sessions = array_filter($sessions, static function (array $s) use ($needle): bool {

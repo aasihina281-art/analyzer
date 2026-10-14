@@ -340,6 +340,7 @@ final class PFCampaignDetector
 
             // --- Агрегат кампании ---
             $ips = []; $fps = []; $uas = []; $sessionsCount = 0; $totalRequests = 0;
+            $blockLinesAgg = 0; $captchaEvAgg = 0; $rayIdsAgg = 0; // раздельные счётчики строк
             $captchaShown = 0; $captchaPassed = 0; $csrfErrors = 0;
             $pathDayAgg = [];      // path => [date => hits] (объединённый)
             $refCatAgg = [];       // категория => кол-во
@@ -356,7 +357,10 @@ final class PFCampaignDetector
                 if ($e['type'] === 'fp') $fps[$e['value']] = true;
                 foreach ($e['uas'] as $ua) $uas[(string)$ua] = true;
                 $sessionsCount += (int)$e['sessions'];
-                $totalRequests += (int)$e['requests'];
+                $totalRequests += (int)$e['requests'];           // только REQ-строки
+                $blockLinesAgg += (int)($e['blockLines'] ?? 0);  // только BLOCK-строки
+                $captchaEvAgg  += (int)($e['captchaShownEvents'] ?? 0); // CAPTCHA-строки
+                $rayIdsAgg     += (int)($e['rayIds'] ?? 0);      // RayID (HTTP-запросы CF)
                 $captchaShown  += (int)$e['captchaShown'];
                 $captchaPassed += (int)$e['captchaPassed'];
                 $csrfErrors    += (int)($e['csrfErrors'] ?? 0);
@@ -392,16 +396,22 @@ final class PFCampaignDetector
             $urlDayMax = $topSeries ? max($topSeries) : 0;
 
             // refererPattern кампании
+            /*
+             * own_site (реферер с собственного домена) — переклейка накрутчика,
+             * НЕ учитывается как внешний источник. Настоящий источник захода —
+             * utm_referrer/ysclid внутри URL запроса.
+             */
             $yish = (int)($refCatAgg['yandex'] ?? 0) + (int)($refCatAgg['yandex_proxy'] ?? 0);
-            $refTotal = max(1, array_sum($refCatAgg));
+            $refTotalAll = max(1, array_sum($refCatAgg));
+            $refTotalExt = max(1, $refTotalAll - (int)($refCatAgg['own_site'] ?? 0));
             $hasYsOnTop = false;
             foreach ($members as [$t2, $k2]) {
                 if (($entities[$t2][$k2]['topPath'] ?? '') === $topPath && !empty($entities[$t2][$k2]['topPathHasYsclid'])) $hasYsOnTop = true;
             }
-            if ($hasYsOnTop && $yish > 0) $refererPattern = 'yandex_with_ysclid';
-            elseif ($yish / $refTotal >= 0.5) $refererPattern = (isset($refCatAgg['yandex_proxy']) && $refCatAgg['yandex_proxy'] > ($refCatAgg['yandex'] ?? 0)) ? 'yandex_proxy' : 'yandex';
-            elseif (($refCatAgg['google'] ?? 0) / $refTotal >= 0.5) $refererPattern = 'google';
-            elseif (($refCatAgg['direct'] ?? 0) / $refTotal >= 0.5) $refererPattern = 'direct';
+            if ($hasYsOnTop && ($yish > 0 || $utmReq > 0)) $refererPattern = 'yandex_with_ysclid';
+            elseif ($yish / $refTotalExt >= 0.5) $refererPattern = (isset($refCatAgg['yandex_proxy']) && $refCatAgg['yandex_proxy'] > ($refCatAgg['yandex'] ?? 0)) ? 'yandex_proxy' : 'yandex';
+            elseif (($refCatAgg['google'] ?? 0) / $refTotalExt >= 0.5) $refererPattern = 'google';
+            elseif (($refCatAgg['direct'] ?? 0) / $refTotalAll >= 0.5) $refererPattern = 'direct';
             else $refererPattern = 'other';
 
             // Итоговый PF-вес кампании: максимум из участником + бонус за размер пула
