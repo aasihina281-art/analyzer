@@ -55,6 +55,30 @@ if (!class_exists('AntiBotLogParser')) {
             return 'other';
         }
 
+        /**
+         * Запрос = строка лога, где после IP идёт путь, начинающийся с "/"
+         * (или полный http(s)-URL). Все прочие строки (REF:, PTR:, UA:, FP:,
+         * FPS:, "Show captcha", "Displaying the verification page", "Tag set",
+         * "Found in list", "Display the blocking page" и т.п.) — служебные
+         * события ТОГО ЖЕ запроса и запросами не считаются.
+         */
+        public static function isRequestLine(string $message): bool
+        {
+            return ($message[0] ?? '') === '/' || preg_match('#^https?://#i', $message) === 1;
+        }
+
+        /** Нормализация URL запроса: путь без query, хвостовой слэш убирается. */
+        public static function requestPath(string $message): string
+        {
+            $path = (string)preg_replace('/\?.*$/', '', $message);
+            if ($path === '') return '/';
+            if ($path !== '/') {
+                $path = rtrim($path, '/');
+                if ($path === '') return '/';
+            }
+            return $path;
+        }
+
         /** Есть ли в URL метки клика из поиска Яндекса (ysclid= / utm_referrer=). */
         public static function urlHasYsclid(string $url): bool
         {
@@ -73,9 +97,9 @@ if (!class_exists('AntiBotLogParser')) {
                 'ip' => $ip,
                 'firstSeen' => $timestamp,
                 'lastSeen' => $timestamp,
-                'requestCount' => 0,
-                'logLineCount' => 0,
-                'urls' => [],           // url => hit count (сырой URL с query)
+                'requestCount' => 0,    // число HTTP-запросов (строки-URL), НЕ строк лога
+                'logLineCount' => 0,    // всего строк лога в сессии (служебные + запросы)
+                'urls' => [],           // path (без query) => hit count — один запрос = +1
                 'urlPathDays' => [],    // path (без query) => [date => hits] — для графика повторов по дням
                 'fingerprints' => [],
                 'fingerprint' => '',
@@ -166,38 +190,43 @@ if (!class_exists('AntiBotLogParser')) {
                 // --- Classify message (order matters, cheap checks first) ---
                 $first = $message[0] ?? '';
 
-                if ($first === '/' || preg_match('#^https?://#i', $message)) {
-                    // HTTP request line
+                if (self::isRequestLine($message)) {
+                    // HTTP request line: путь, начинающийся с "/" (или полный URL).
+                    // Это ЕДИНСТВЕННЫЙ тип строк, который считается запросом.
+                    // Все прочие строки (REF:, PTR:, UA:, FP:, FPS:, "Show captcha",
+                    // "Displaying the verification page", "Tag set", "Found in list" и т.д.)
+                    // — служебные события того же запроса, они НЕ увеличивают requestCount.
                     $s['requestCount']++;
-                    if (isset($s['urls'][$message]) || count($s['urls']) < 300) {
-                        $s['urls'][$message] = ($s['urls'][$message] ?? 0) + 1; // url => hit count
+
+                    // Нормализуем URL до пути без query-строки: одна и та же страница,
+                    // приходящая с разными ysclid/utm_referrer, — это ПОВТОР одного URL.
+                    $rawUrl = $message;
+                    $path = self::requestPath($message);
+
+                    if (isset($s['urls'][$path]) || count($s['urls']) < 300) {
+                        $s['urls'][$path] = ($s['urls'][$path] ?? 0) + 1; // path => hit count
                     }
                     if (count($s['requestTimes']) < self::MAX_EVENTS_PER_SESSION) {
                         $s['requestTimes'][] = $timestamp;
                     }
 
                     // --- Накрутка ПФ: метки клика из поиска + повторы пути по дням ---
-                    $hasYs = self::urlHasYsclid($message);
-                    $hasUt = self::urlHasUtmReferrer($message);
+                    $hasYs = self::urlHasYsclid($rawUrl);
+                    $hasUt = self::urlHasUtmReferrer($rawUrl);
                     if ($hasYs) $s['ysclidCount']++;
                     if ($hasUt) $s['utmReferrerCount']++;
 
-                    // Путь без query — одна страница может приходить с разными
-                    // ysclid/utm_referrer, но для «накрутки одного URL» это тот же адрес.
-                    $path = (string)preg_replace('/\?.*$/', '', $message);
-                    if ($path !== '') {
-                        if (!isset($s['pathFlags'][$path])) {
-                            $s['pathFlags'][$path] = ['ys' => false, 'ut' => false];
-                        }
-                        if ($hasYs) $s['pathFlags'][$path]['ys'] = true;
-                        if ($hasUt) $s['pathFlags'][$path]['ut'] = true;
+                    if (!isset($s['pathFlags'][$path])) {
+                        $s['pathFlags'][$path] = ['ys' => false, 'ut' => false];
+                    }
+                    if ($hasYs) $s['pathFlags'][$path]['ys'] = true;
+                    if ($hasUt) $s['pathFlags'][$path]['ut'] = true;
 
-                        $day = substr($timestamp, 0, 10);
-                        if (!isset($s['urlPathDays'][$path])) $s['urlPathDays'][$path] = [];
-                        if (!isset($s['urlPathDays'][$path][$day])) $s['urlPathDays'][$path][$day] = 0;
-                        if (count($s['urlPathDays'][$path]) <= 90) { // защита от раздувания памяти
-                            $s['urlPathDays'][$path][$day]++;
-                        }
+                    $day = substr($timestamp, 0, 10);
+                    if (!isset($s['urlPathDays'][$path])) $s['urlPathDays'][$path] = [];
+                    if (!isset($s['urlPathDays'][$path][$day])) $s['urlPathDays'][$path][$day] = 0;
+                    if (count($s['urlPathDays'][$path]) <= 90) { // защита от раздувания памяти
+                        $s['urlPathDays'][$path][$day]++;
                     }
                 } elseif ($first === 'R' && stripos($message, 'REF:') === 0) {
                     $ref = trim(substr($message, 4));

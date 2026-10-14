@@ -113,14 +113,17 @@ final class RiskScorer
 
         if (!empty($session['blocked'])) $e['blocked']++;
 
-        // Per-URL request counters (repeat visits on the same page)
-        foreach ((array)($session['urls'] ?? []) as $url) {
+        // Per-URL request counters (repeat visits on the same page).
+        // $session['urls'] — уже счётчики path => hits (1 hit = 1 HTTP-запрос),
+        // поэтому прибавляем именно количество, а не «+1 на уникальный URL».
+        foreach ((array)($session['urls'] ?? []) as $url => $hits) {
             $url = (string)$url;
             if ($url === '') continue;
-            if (!isset($e['urlCounts'][$url]) && count($e['urlCounts']) < 2000) {
-                $e['urlCounts'][$url] = 0;
+            $hits = max(1, (int)$hits);
+            if (!isset($e['urlCounts'][$url]) && count($e['urlCounts']) >= 2000) {
+                continue; // защита от разрастания карты URL
             }
-            if (isset($e['urlCounts'][$url])) $e['urlCounts'][$url]++;
+            $e['urlCounts'][$url] = ($e['urlCounts'][$url] ?? 0) + $hits;
         }
 
         // Request timestamps for interval / periodicity analysis
@@ -138,9 +141,9 @@ final class RiskScorer
         $sFirst = substr((string)($session['firstSeen'] ?? ''), 0, 10);
         $sLast  = substr((string)($session['lastSeen'] ?? ''), 0, 10);
         if ($sFirst !== '') {
-            foreach ((array)($session['urls'] ?? []) as $uUrl) {
+            foreach ((array)($session['urls'] ?? []) as $uUrl => $hits) {
                 $uUrl = (string)$uUrl;
-                if ($uUrl === '') continue;
+                if ($uUrl === '' || (int)$hits <= 0) continue; // только реальные запросы
                 $e['urlDays'][$uUrl][$sFirst] = true;
                 if ($sLast !== '' && $sLast !== $sFirst) $e['urlDays'][$uUrl][$sLast] = true;
             }

@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/includes/parser.php'; // единое правило «что такое запрос» (isRequestLine)
 analyzerRequireLogin();
 header('Content-Type: application/json; charset=utf-8');
 
@@ -72,7 +73,10 @@ function parseLogLine(string $line): ?array {
 }
 
 function eventKind(string $msg): string {
-    if ($msg !== '' && $msg[0] === '/') return 'request';
+    // Запрос = строка-URL (путь с "/" или полный http(s)-URL) — то же правило,
+    // что и в AntiBotLogParser. REF:/PTR:/UA:/FP:/FPS:/captcha/Tag set и т.п.
+    // — служебные события того же запроса, НЕ отдельные обращения.
+    if (AntiBotLogParser::isRequestLine($msg)) return 'request';
     if (str_starts_with($msg, 'REF:')) return 'referrer';
     if (str_starts_with($msg, 'PTR:')) return 'ptr';
     if (str_starts_with($msg, 'UA:')) return 'ua';
@@ -106,7 +110,7 @@ if ($type === 'ip') {
 
         $sessions[$row['ray']] = true;
         $kind = eventKind($row['message']);
-        if ($kind === 'request') $urls[$row['message']] = true;
+        if ($kind === 'request') $urls[AntiBotLogParser::requestPath($row['message'])] = true; // путь без query — тот же URL, что и в сущностях
         $row['kind'] = $kind;
         pushLatest($events, $row);
     }
@@ -141,7 +145,7 @@ if ($type === 'ip') {
                 $sessions[$row['ray']] = true;
                 $ips[$row['ip']] = true;
                 $kind = eventKind($row['message']);
-                if ($kind === 'request') $urls[$row['message']] = true;
+                if ($kind === 'request') $urls[AntiBotLogParser::requestPath($row['message'])] = true; // путь без query
                 $row['kind'] = $kind;
                 pushLatest($events, $row);
             }
@@ -174,7 +178,7 @@ if ($type === 'ip') {
                 $sessions[$row['ray']] = true;
                 $ips[$row['ip']] = true;
                 $kind = eventKind($row['message']);
-                if ($kind === 'request') $urls[$row['message']] = true;
+                if ($kind === 'request') $urls[AntiBotLogParser::requestPath($row['message'])] = true; // путь без query
                 $row['kind'] = $kind;
                 pushLatest($events, $row);
             }
@@ -190,7 +194,7 @@ usort($events, static fn(array $a, array $b): int => strcmp($a['time'], $b['time
 foreach ($events as $event) {
     $ips[$event['ip']] = true;
     $sessions[$event['ray']] = true;
-    if ($event['kind'] === 'request') $urls[$event['message']] = true;
+    if ($event['kind'] === 'request') $urls[AntiBotLogParser::requestPath($event['message'])] = true;
 }
 
 $urls = array_keys($urls);
