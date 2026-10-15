@@ -7,6 +7,13 @@
  * session so behavioral metrics (repeat visits, interval regularity)
  * can be computed without holding every raw line in memory.
  *
+ * КЛЮЧЕВОЕ ПРАВИЛО АНАЛИЗАТОРА: рассматриваются ТОЛЬКО посетители,
+ * успешно прошедшие CAPTCHA («Successfully passed the captcha»).
+ * Поведенческие боты накрутки ПФ решают капчу и только после этого
+ * влияют на показатели Яндекс.Метрики; весь остальной трафик
+ * (не прошедшие проверку, роботы, прямые блокировки) из анализа
+ * исключается на уровне парсера.
+ *
  * Native log format:
  *   YYYY-MM-DD HH:MM:SS RAYID IP MESSAGE
  */
@@ -148,6 +155,18 @@ if (!class_exists('AntiBotLogParser')) {
 
         /**
          * Parse a log FILE in one streaming pass. Memory-friendly for big logs.
+         *
+         * ПОТОК РАЗБОРА:
+         *  1) сбор строк лога в «запросовые» RayID-блоки;
+         *  2) ОТБРОС всего, что не относится к борьбе с накруткой ПФ:
+         *     индексирующих роботов, whitelist-трафика и, главное,
+         *     всех, кто НЕ прошёл CAPTCHA успешно;
+         *  3) склейка оставшихся RayID-записей в реальные клиентские
+         *     сессии (IP+UA+FP, простой > SESSION_GAP_SEC разрывает сессию).
+         *
+         * На выходе — ТОЛЬКО сущности, прошедшие капчу. Их поведение
+         * (повторы тех же URL, периодичность, скорость решения капчи)
+         * и анализируется дальше.
          *
          * @return array{sessions: array<int,array>, meta: array}
          */
@@ -383,11 +402,36 @@ if (!class_exists('AntiBotLogParser')) {
             unset($session);
 
             /*
+             * =================================================================
+             * ФИЛЬТР «ТОЛЬКО ПРОШЕДШИЕ CAPTCHA»
+             * =================================================================
+             * Анализатор борется с поведенческими ботами накрутки ПФ, а они
+             * обязательно решают капчу — иначе не попадут на сайт и не
+             * исказят метрику. Поэтому из анализа исключается ВСЁ лишнее:
+             *  - индексирующие роботы (не люди, ПФ не накручивают);
+             *  - whitelist-трафик;
+             *  - все, кто НЕ написал «Successfully passed the captcha»
+             *    (показалась, но не прошла / закрыла страницу / заблок.).
+             * Остаются только RayID-сессии с успешным прохождением капчи.
+             */
+            $totalRaySessions = count($sessions);
+            $passedRaySessions = 0;
+            foreach ($sessions as $key => $sess) {
+                if (empty($sess['captchaPassed'])
+                    || !empty($sess['isRobot'])
+                    || !empty($sess['isWhitelisted'])) {
+                    unset($sessions[$key]);
+                } else {
+                    $passedRaySessions++;
+                }
+            }
+
+            /*
              * --- Склейка RayID-записей в реальные клиентские сессии ---
              * Группируем по clientKey (IP+UA+FP), внутри группы сортируем по
              * времени и режем цепочку при простое > SESSION_GAP_SEC.
-             * Результат: каждая запись = одна поведенческая сессия клиента;
-             * исходные RayID сохраняются в rayIds для трассировки.
+             * Результат: каждая запись = одна поведенческая сессия клиента,
+             * ПРОШЕДШЕГО капчу; исходные RayID сохраняются в rayIds.
              */
             // Перед склейкой все set/map-поля должны быть ассоциативными картами.
             // Иначе fingerprints/pathFlags, уже преобразованные в списки выше,
@@ -530,6 +574,10 @@ if (!class_exists('AntiBotLogParser')) {
                 'meta' => [
                     'lines' => $lineCount,
                     'sessions' => count($sessions),
+                    // Статистика фильтрации: только прошедшие CAPTCHA остались в анализе
+                    'raySessionsTotal' => $totalRaySessions,
+                    'raySessionsPassed' => $passedRaySessions,
+                    'raySessionsDropped' => $totalRaySessions - $passedRaySessions,
                 ],
             ];
         }

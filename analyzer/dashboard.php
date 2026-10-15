@@ -1,11 +1,13 @@
 <?php
 /**
- * AntiBot Analyzer v3 — behavioral visitor risk dashboard.
+ * AntiBot Analyzer v3 — behavioral risk dashboard for captcha-passed visitors.
  *
- * Key idea: passing a CAPTCHA does NOT make a visitor good. Behavioral bots
- * solve captchas too and then hammer the SAME page again and again (even
- * daily) with machine-like regularity — this hurts Yandex metrics and
- * distorts analytics. This dashboard detects such visitors by behavior:
+ * Key idea: the analyzer tracks ONLY visitors who successfully passed the
+ * CAPTCHA. Behavioral PF-inflation bots solve captchas and then hammer the
+ * SAME page again and again (even daily) with machine-like regularity — this
+ * hurts Yandex metrics and distorts analytics. Everything else (failed /
+ * abandoned captcha, index robots, whitelisted traffic) is dropped by the
+ * parser and never shown or scored here. Detection is purely behavioral:
  *
  *  - repeated hits on one URL from one FP/IP (incl. across different days)
  *  - mechanical periodicity of request intervals (low CV, exact repeats)
@@ -33,7 +35,7 @@ require_once __DIR__ . '/includes/pf-detector.php';
 
 /* Версия схемы кэшируемых данных. При изменении структуры сущностей /
  * кампаний / графиков нужно увеличить — старый кэш будет инвалидирован. */
-const ANALYZER_SCHEMA_VERSION = 10; // 10 — кампании пересчитывают запросы по уникальным исходным сессиям
+const ANALYZER_SCHEMA_VERSION = 13; // 13 — сверка статуса блока с актуальными blacklist-файлами (разблокировка больше не «застревает»)
 
 /* ------------------------------------------------------------------ *
  * Blocking actions (unchanged security model)
@@ -51,11 +53,15 @@ function analyzerActionToken(): string {
 }
 
 function analyzerValidateIP(string $ip): bool {
-    return filter_var($ip, FILTER_VALIDATE_IP) !== false;
+    // В пулах кампаний встречаются записи вида "134.122.40.0/24" (CIDR) или
+    // с портом — допускаем только чистые IPv4/IPv6 без суффиксов.
+    return filter_var(trim($ip), FILTER_VALIDATE_IP) !== false;
 }
 
 function analyzerValidateFingerprint(string $fp): bool {
-    return (bool)preg_match('/^[a-f0-9]{16,128}$/i', $fp);
+    // Отпечаток в antibot.log — hex-строка от 16 до 128 символов.
+    // Регистр не важен: значение нормализуется через strtolower() перед записью.
+    return (bool)preg_match('/^[a-f0-9]{16,128}$/i', trim($fp));
 }
 
 function analyzerListCandidates(string $logFile, string $listName): array {
@@ -143,37 +149,165 @@ function analyzerReadBlacklist(string $logFile, string $listName): array {
     return $set;
 }
 
-function analyzerPerformBlock(string $logFile, string $action, string $ip, string $fp): array {
-    if (!in_array($action, ['ip', 'fingerprint', 'both'], true)) {
-        return ['ok' => false, 'message' => 'Неизвестное действие блокировки.'];
-    }
-    $results = [];
-    $comment = 'Added from AntiBot Analyzer (behavioral risk)';
+/**
+ * Выполнить блокировку по списку значений с ПОЛНОЙ проверкой каждого элемента.
+ *
+ * Раньше при действии 'both' невалидный FP приводил к раннему возврату —
+ * IP-часть при этом НЕ записывалась, и кнопка «🚫 FP + IP» выглядела
+ * сломанной. Теперь все значения валидируются заранее: если хоть одно
+ * некорректно — блокировка не выполняется вообще (атомарность), пользователь
+ * получает точный список проблемных значений.
+ */
+function analyzerPerformBlock(string $logFile, array $ips, array $fps): array {
+    $comment = 'Added from AntiBot Analyzer (behavioral risk / PF campaign)';
 
-    if ($action === 'ip' || $action === 'both') {
-        if (!analyzerValidateIP($ip)) return ['ok' => false, 'message' => 'Некорректный IP-адрес.'];
-        $path = analyzerFindOrCreateList($logFile, 'blacklist_ip');
-        if ($path === null) return ['ok' => false, 'message' => 'Не найден или недоступен lists/blacklist_ip.'];
-        $results[] = ['target' => 'IP', 'value' => $ip] + analyzerAddToList($path, $ip, $comment);
+    // --- Валидация ВСЕХ значений до записи (без раннего возврата по части) ---
+    $invalid = [];
+    foreach ($ips as $ip) {
+        $ip = trim((string)$ip);
+        if ($ip === '' || !analyzerValidateIP($ip)) $invalid[] = 'IP: ' . ($ip !== '' ? $ip : '(пусто)');
     }
-    if ($action === 'fingerprint' || $action === 'both') {
-        if (!analyzerValidateFingerprint($fp)) return ['ok' => false, 'message' => 'Некорректный Fingerprint.'];
-        $path = analyzerFindOrCreateList($logFile, 'blacklist_fingerprint');
-        if ($path === null) return ['ok' => false, 'message' => 'Не найден или недоступен lists/blacklist_fingerprint.'];
-        $results[] = ['target' => 'Fingerprint', 'value' => $fp] + analyzerAddToList($path, $fp, $comment);
+    foreach ($fps as $fp) {
+        $fp = strtolower(trim((string)$fp));
+        if ($fp === '' || !analyzerValidateFingerprint($fp)) $invalid[] = 'FP: ' . ($fp !== '' ? substr($fp, 0, 24) . '…' : '(пусто)');
+    }
+    if ($invalid !== []) {
+        return ['ok' => false, 'added' => 0, 'results' => [],
+                'message' => 'Некорректные значения — блокировка отменена: ' . implode(', ', array_slice($invalid, 0, 5))];
+    }
+    if ($ips === [] && $fps === []) {
+        return ['ok' => false, 'added' => 0, 'results' => [], 'message' => 'Нечего блокировать: список пуст.'];
+    }
+
+    $ipPath = $ips ? analyzerFindOrCreateList($logFile, 'blacklist_ip') : null;
+    $fpPath = $fps ? analyzerFindOrCreateList($logFile, 'blacklist_fingerprint') : null;
+    if ($ips && $ipPath === null) return ['ok' => false, 'added' => 0, 'results' => [], 'message' => 'Не найден или недоступен для записи lists/blacklist_ip.'];
+    if ($fps && $fpPath === null) return ['ok' => false, 'added' => 0, 'results' => [], 'message' => 'Не найден или недоступен для записи lists/blacklist_fingerprint.'];
+
+    $results = [];
+    foreach ($ips as $ip) {
+        $ip = trim((string)$ip);
+        $results[] = ['target' => 'IP', 'value' => $ip] + analyzerAddToList($ipPath, $ip, $comment);
+    }
+    foreach ($fps as $fp) {
+        $fp = strtolower(trim((string)$fp));
+        $results[] = ['target' => 'Fingerprint', 'value' => $fp] + analyzerAddToList($fpPath, $fp, $comment);
     }
 
     $added = array_sum(array_map(fn($r) => !empty($r['added']) ? 1 : 0, $results));
     $failed = array_filter($results, fn($r) => empty($r['ok']));
 
+    // Итоговое состояние пула: значение «в блоке», если оно было добавлено
+    // сейчас ИЛИ уже находилось в blacklist. Используется для разблокировки
+    // кампании целиком — снимается ровно тот набор, который показан на карточке.
+    $inBlacklist = ['ips' => [], 'fps' => []];
+    foreach ($results as $r) {
+        if (empty($r['ok'])) continue;
+        if ($r['target'] === 'IP') $inBlacklist['ips'][] = (string)$r['value'];
+        else $inBlacklist['fps'][] = (string)$r['value'];
+    }
+
     return [
         'ok' => empty($failed),
         'added' => $added,
         'results' => $results,
+        'inBlacklist' => $inBlacklist,
         'message' => empty($failed)
             ? ($added > 0 ? 'Блокировка применена.' : 'Все выбранные значения уже были в blacklist.')
             : 'Не все действия выполнены.',
     ];
+}
+
+/**
+ * Разблокировать набор IP + FP одним проходом по файлам списков.
+ * Возвращает количество удалённых записей каждого типа.
+ *
+ * @return array{ok:bool,removedIps:int,removedFps:int,message:string}
+ */
+function analyzerPerformUnblock(string $logFile, array $ips, array $fps): array {
+    $removedIps = 0;
+    $removedFps = 0;
+    $errors = [];
+
+    $jobs = [
+        ['ip', 'blacklist_ip', $ips],
+        ['fp', 'blacklist_fingerprint', $fps],
+    ];
+
+    foreach ($jobs as [$kind, $listName, $values]) {
+        $values = array_values(array_unique(array_filter(array_map(
+            static fn($v) => strtolower(trim((string)$v)),
+            $values
+        ), static fn($v) => $v !== '')));
+        if ($values === []) continue;
+
+        $path = analyzerFindOrCreateList($logFile, $listName);
+        if ($path === null || !is_writable($path)) {
+            $errors[] = 'Файл ' . $listName . ' недоступен для записи.';
+            continue;
+        }
+
+        $handle = fopen($path, 'c+');
+        if (!$handle) { $errors[] = 'Не удалось открыть ' . $listName . '.'; continue; }
+        try {
+            if (!flock($handle, LOCK_EX)) { $errors[] = 'Не удалось получить блокировку файла ' . $listName . '.'; continue; }
+            rewind($handle);
+            $content = (string)stream_get_contents($handle);
+            $wanted = array_flip($values);
+            $out = [];
+            $found = 0;
+            foreach (preg_split('/\R/', $content) ?: [] as $line) {
+                $lv = trim((string)preg_replace('/#.*$/', '', (string)$line));
+                if ($lv !== '' && isset($wanted[$lv])) { $found++; continue; } // удаляем строку
+                $out[] = $line;
+            }
+            if ($found > 0) {
+                $newContent = implode(PHP_EOL, $out) . PHP_EOL;
+                ftruncate($handle, 0);
+                rewind($handle);
+                fwrite($handle, $newContent);
+                fflush($handle);
+            }
+            flock($handle, LOCK_UN);
+            if ($kind === 'ip') $removedIps += $found; else $removedFps += $found;
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    $total = $removedIps + $removedFps;
+    return [
+        'ok' => $errors === [],
+        'removedIps' => $removedIps,
+        'removedFps' => $removedFps,
+        'message' => $errors !== []
+            ? implode(' ', $errors)
+            : ($total > 0
+                ? sprintf('Разблокировано: %d IP и %d FP.', $removedIps, $removedFps)
+                : 'Ни одной записи не найдено в blacklist — статус уже актуален.'),
+    ];
+}
+
+/**
+ * Собрать полный пул IP + FP кампании из актуальных данных (не из среза карточки).
+ * Используется POST-обработчиком action=campaign: раньше кнопка банила только
+ * первые 10 IP и молча пропускала остальные, из-за чего «блокировка кампании»
+ * казалась неработающей.
+ */
+function analyzerCampaignPool(?array $campaign): array {
+    $ips = [];
+    $fps = [];
+    if (is_array($campaign)) {
+        foreach ((array)($campaign['ips'] ?? []) as $ip) {
+            $ip = trim((string)$ip);
+            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) !== false) $ips[$ip] = true;
+        }
+        foreach ((array)($campaign['fingerprints'] ?? []) as $fp) {
+            $fp = strtolower(trim((string)$fp));
+            if ($fp !== '' && preg_match('/^[a-f0-9]{16,128}$/', $fp) === 1) $fps[$fp] = true;
+        }
+    }
+    return ['ips' => array_keys($ips), 'fps' => array_keys($fps)];
 }
 
 /* ------------------------------------------------------------------ *
@@ -278,7 +412,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                     $out = [];
                     foreach ($lines as $line) {
                         $lv = trim((string)preg_replace('/#.*$/', '', (string)$line));
-                        if ($lv !== '' && $lv === $value) { $removed = true; continue; } // выбрасываем эту строку
+                        // FP-записи сравниваются регистронезависимо: в файле запись
+                        // может быть в верхнем регистре, а карточка отдаёт нижний.
+                        if ($lv !== '' && ($lv === $value || (!$isIp && strcasecmp($lv, $value) === 0))) { $removed = true; continue; } // выбрасываем эту строку
                         $out[] = $line;
                     }
                     if ($removed) {
@@ -287,12 +423,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                 }
                 $actionMessage = $removed
                     ? ($isIp ? "IP {$value} удалён из blacklist." : "Fingerprint {$value} удалён из blacklist.")
-                    : 'Запись не найдена или файл списка недоступен для записи.';
+                    : 'Запись не найдена в blacklist — статус и так актуален (или файл списка недоступен для записи).';
                 $actionError = !$removed;
-                if ($removed) analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+                // Инвалидация кэша обязательна ВСЕГДА: даже если запись удалил
+                // кто-то вручную (вне интерфейса), счётчики и вкладки должны
+                // пересчитаться от актуальных файлов списков.
+                analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
             }
-        } else {
-            $result = analyzerPerformBlock($logFile, $action, $ip, $fp);
+        } elseif ($action === 'unblock_campaign') {
+            /* ---------- РАЗБЛОКИРОВКА КАМПАНИИ ЦЕЛИКОМ ----------
+               Снимает с блокировки весь пул IP+FP карточки одним действием.
+               Раньше такой кнопки не было вовсе: после бана кампании её нельзя
+               было откатить, не удаляя десятки записей по одной. */
+            $rawIps = preg_split('/[\r\n,;\s]+/', (string)($_POST['pool_ips'] ?? '')) ?: [];
+            $rawFps = preg_split('/[\r\n,;\s]+/', (string)($_POST['pool_fps'] ?? '')) ?: [];
+            $rawIps = array_values(array_filter(array_map('trim', $rawIps), static fn($v) => $v !== ''));
+            $rawFps = array_values(array_filter(array_map('trim', $rawFps), static fn($v) => $v !== ''));
+            if ($rawIps === [] && $rawFps === []) {
+                $actionMessage = 'Пул кампании пуст. Обновите страницу и повторите действие.';
+                $actionError = true;
+            } else {
+                $result = analyzerPerformUnblock($logFile, $rawIps, $rawFps);
+                $actionMessage = $result['message'];
+                $actionError = !$result['ok'] && ($result['removedIps'] + $result['removedFps']) === 0;
+                analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+            }
+        } elseif ($action === 'sync_blacklists') {
+            /* ---------- ПРИНУДИТЕЛЬНАЯ СВЕРКА С ЧЁРНЫМИ СПИСКАМИ ----------
+               Пересобирает анализ заново: статус «заблокирован» берётся ИСКЛЮЧИТЕЛЬНО
+               из текущего содержимого blacklist_ip / blacklist_fingerprint.
+               Помогает, если списки правили руками/внешней системой. */
+            analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+            header('Location: ' . viewQuerySelf(['fresh' => 1]));
+            exit;
+        } elseif ($action === 'ip' || $action === 'fingerprint' || $action === 'both') {
+            /* ---------- ОДИНОЧНАЯ БЛОКИРОВКА (IP / FP / FP+IP) ----------
+               Валидация обеих частей выполняется ДО записи: раньше невалидный
+               FP обрывал обработку и IP-часть молча не блокировалась. */
+            $ips = ($action === 'ip' || $action === 'both') && $ip !== '' ? [$ip] : [];
+            $fps = ($action === 'fingerprint' || $action === 'both') && $fp !== '' ? [$fp] : [];
+            $result = analyzerPerformBlock($logFile, $ips, $fps);
             $actionMessage = $result['message'] ?? 'Готово.';
             $actionError = empty($result['ok']);
 
@@ -303,8 +473,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                 }
                 $actionMessage .= ' ' . implode(' · ', $parts);
             }
-            // Invalidate analytics cache (blacklist membership affects verdicts)
+            // Инвалидация кэша обязательна ВСЕГДА (не только при added>0):
+            // blacklist-флаги применяются поверх кэша, но счётчики/графики
+            // должны пересчитываться после любого изменения списков.
             analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+        } elseif ($action === 'campaign' || $action === 'campaign_pool') {
+            /* ---------- БЛОКИРОВКА ВСЕЙ КАМПАНИИ ПФ (объединённый пул IP + FP) ----------
+               POST приходит на ещё не выполненный анализ, поэтому кампаний в
+               памяти пока нет. Надёжный источник — сам отправленный пул: форма
+               карточки кампании всегда содержит ПОЛНЫЕ списки IP и FP (без
+               среза «первые 10», из-за которого блокировка выглядела неработающей). */
+            $pool = null;
+            $rawIps = preg_split('/[\r\n,;\s]+/', (string)($_POST['pool_ips'] ?? '')) ?: [];
+            $rawFps = preg_split('/[\r\n,;\s]+/', (string)($_POST['pool_fps'] ?? '')) ?: [];
+            $rawIps = array_values(array_filter(array_map('trim', $rawIps), static fn($v) => $v !== ''));
+            $rawFps = array_values(array_filter(array_map('trim', $rawFps), static fn($v) => $v !== ''));
+            if ($rawIps !== [] || $rawFps !== []) {
+                $pool = ['ips' => $rawIps, 'fingerprints' => $rawFps];
+            }
+
+            if ($pool === null) {
+                $actionMessage = 'Пул кампании пуст или устарел. Обновите страницу и повторите блокировку.';
+                $actionError = true;
+            } else {
+                $clean = analyzerCampaignPool($pool);
+                $result = analyzerPerformBlock($logFile, $clean['ips'], $clean['fps']);
+                $addedIp = 0; $addedFp = 0;
+                foreach ((array)($result['results'] ?? []) as $item) {
+                    if (empty($item['added'])) continue;
+                    if ($item['target'] === 'IP') $addedIp++; else $addedFp++;
+                }
+                $actionMessage = $result['ok']
+                    ? sprintf('Кампания заблокирована целиком: %d IP и %d FP добавлены в blacklist.', $addedIp, $addedFp)
+                    : (string)$result['message'];
+                $actionError = empty($result['ok']);
+                // Инвалидация кэша обязательна даже при added=0 (все значения уже
+                // в blacklist): счётчик «⛔ Заблокированы» в кэше мог устареть.
+                analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+            }
+        } else {
+            $actionMessage = 'Неизвестное действие блокировки.';
+            $actionError = true;
         }
     }
 }
@@ -316,9 +525,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
 $timeFrom   = isset($_GET['from']) ? trim((string)$_GET['from']) : '';
 $timeTo     = isset($_GET['to']) ? trim((string)$_GET['to']) : '';
 $searchTerm = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
-$view       = (string)($_GET['view'] ?? 'risk');
-if (!in_array($view, ['risk', 'pf', 'blocked', 'pending', 'passed', 'robots', 'all'], true)) $view = 'risk';
-$minRisk    = max(0, min(100, (int)($_GET['minrisk'] ?? 40)));
+$view       = (string)($_GET['view'] ?? 'pf');
+if (!in_array($view, ['pf', 'risk', 'blocked', 'all'], true)) $view = 'pf';
+$minRisk    = max(0, min(100, (int)($_GET['minrisk'] ?? 0))); // по умолчанию 0: фильтр показывает все сущности
 $page       = max(1, (int)($_GET['page'] ?? 1));
 $perPage    = 30;
 $nocache    = !empty($_GET['fresh']);
@@ -386,17 +595,13 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
     }
 
 
-    // Robots / whitelist lists kept for their tabs
+    // Парсер уже оставил ТОЛЬКО посетителей, успешно прошедших CAPTCHA.
+    //Robots / whitelist tabs удалены: непрошедшие проверка из анализа исключены полностью.
     $robotSessions = [];
-    $whitelistCount = 0;
-    foreach ($sessions as $s) {
-        if (!empty($s['isRobot'])) $robotSessions[] = $s;
-        if (!empty($s['isWhitelisted'])) $whitelistCount++;
-    }
 
     /* ---------- Global chart data (single aggregation pass) ---------- */
 
-    // Timeline buckets over all requests
+    // Timeline buckets over requests of captcha-PASSED visitors only
     $bucketCounts = [];      // label => total
     $badBucketCounts = [];   // label => risky requests
 
@@ -416,7 +621,8 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
 
     // Re-walk sessions only for cheap global aggregates (already parsed arrays)
     foreach ($sessions as $s) {
-        // Общий график должен включать все HTTP-запросы, в том числе роботов.
+        // График строится по запросам ПОСЕТИТЕЛЕЙ, ПРОШЕДШИХ CAPTCHA
+        // (парсер уже отбросил всех остальных).
         $ip = $s['ip'];
         $isBad = false;
         if (isset($entities['fp'])) {
@@ -482,17 +688,15 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
         'passed' => $riskDist['ok'] ?? 0,
         'pfCampaigns' => count($campaigns),
         'pfEntities' => $riskDist['pf_campaign'] ?? 0,
-        'robots' => count($robotSessions),
-        'whitelist' => $whitelistCount ?? 0,
         'lines' => $parsed['meta']['lines'] ?? 0,
         'sessions' => count($parsed['sessions']),
+        // Фильтр «только прошедшие CAPTCHA»: сколько RayID-сессий отброшено
+        'raySessionsTotal' => (int)($parsed['meta']['raySessionsTotal'] ?? 0),
+        'raySessionsPassed' => (int)($parsed['meta']['raySessionsPassed'] ?? 0),
+        'raySessionsDropped' => (int)($parsed['meta']['raySessionsDropped'] ?? 0),
     ];
 
     $parseMs = round((microtime(true) - $t0) * 1000);
-
-    // Keep robots small for the tab
-    usort($robotSessions, fn($a, $b) => strcmp((string)($b['lastSeen'] ?? ''), (string)($a['lastSeen'] ?? '')));
-    $robotSessions = array_slice($robotSessions, 0, 150);
 
     // Кэшируем только полный анализ. Отфильтрованный результат не должен
     // подменять глобальную статистику для других посетителей/вкладок.
@@ -508,17 +712,40 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
 }
 
 /* ------------------------------------------------------------------ *
- * Blacklist-флаги применяются ВСЕГДА (и после загрузки из кэша тоже).
- * Иначе список «⛔ Заблокированы» зависит от момента записи кэша, а не
- * от текущего содержимого blacklist_ip / blacklist_fingerprint.
+ * СВЕРКА СО СПИСКАМИ (выполняется ВСЕГДА — и для кэша, и для свежего
+ * разбора). Единственный источник истины о статусе блока — актуальное
+ * содержимое файлов blacklist_ip / blacklist_fingerprint.
+ *
+ * 1) Значение есть в файле   => inBlacklist=true, вердикт 'blocked'.
+ * 2) Значения НЕТ в файле    => inBlacklist=false, вердикт пересобирается
+ *    из поведенческого скоринга (pf_campaign/block/suspect/watch/ok).
+ *    Раньше здесь была дыра: сущности «застревали» заблокированными, если
+ *    строку удалили из blacklist вручную или через «Разблокировать», а
+ *    кэш и лог-флаги ('blocked' из строк лога) продолжали показывать блок.
  * ------------------------------------------------------------------ */
 foreach (['ip', 'fp'] as $__type) {
     foreach ($entities[$__type] as $__key => $__e) {
         $__inBl = ($__type === 'ip' && isset($blackIps[(string)$__key]))
-               || ($__type === 'fp' && isset($blackFps[(string)$__key]));
+               || ($__type === 'fp' && isset($blackFps[strtolower((string)$__key)]));
+
         if ($__inBl) {
             $entities[$__type][$__key]['inBlacklist'] = true;
             $entities[$__type][$__key]['riskVerdict'] = 'blocked'; // факт блока сильнее скоринга
+            continue;
+        }
+
+        // В blacklist значения нет — снимаем любой «застрявший» статус блока.
+        if (!empty($__e['inBlacklist']) || ($__e['riskVerdict'] ?? '') === 'blocked') {
+            $entities[$__type][$__key]['inBlacklist'] = false;
+            $entities[$__type][$__key]['logBlacklistIp'] = false;
+            $entities[$__type][$__key]['logBlacklistFp'] = false;
+            // Поведенческий вердикт: сначала ПФ-кампания, затем порог риска.
+            $__verdict = !empty($__e['isPFCampaign'])
+                ? 'pf_campaign'
+                : ((int)($__e['riskScore'] ?? 0) >= 60 ? 'block'
+                    : ((int)($__e['riskScore'] ?? 0) >= 40 ? 'suspect'
+                        : ((int)($__e['riskScore'] ?? 0) >= 20 ? 'watch' : 'ok')));
+            $entities[$__type][$__key]['riskVerdict'] = $__verdict;
         }
     }
 }
@@ -571,13 +798,9 @@ foreach (['fp', 'ip'] as $type) {
                 // Вкладка «Накрутка ПФ»: активные сущности, входящие в кампании накрутки
                 if (!empty($e['isPFCampaign']) && ($e['riskVerdict'] ?? '') !== 'blocked') $list[] = $e;
                 break;
-            case 'pending':
-                if ($e['captchaShown'] > 0 && $e['captchaPassed'] === 0 && $e['riskVerdict'] !== 'blocked') $list[] = $e;
-                break;
-            case 'passed':
-                if ($e['captchaPassed'] > 0 && $e['riskVerdict'] === 'ok') $list[] = $e;
-                break;
             case 'all':
+                // Все сущности — это все посетители, прошедшие CAPTCHA
+                // (непрошедшие исключены парсером из анализа полностью).
                 if (($e['riskVerdict'] ?? '') !== 'blocked') $list[] = $e; // блок — только на своей вкладке
                 break;
         }
@@ -613,14 +836,32 @@ function fmtInt($n): string {
 
 function viewQuery(array $overrides = []): string {
     $params = array_merge([
-        'view' => $_GET['view'] ?? 'risk',
+        'view' => $_GET['view'] ?? 'pf',
         'from' => $_GET['from'] ?? '',
         'to' => $_GET['to'] ?? '',
         'search' => $_GET['search'] ?? '',
-        'minrisk' => $_GET['minrisk'] ?? '40',
+        'minrisk' => $_GET['minrisk'] ?? '',
     ], $overrides);
     $params = array_filter($params, static fn($v) => $v !== '' && $v !== null);
     return '?' . http_build_query($params);
+}
+
+/**
+ * URL текущей страницы GET-параметрами с оверрайдами. Используется
+ * POST-обработчиком (action=sync_blacklists) — вызывается ДО определения
+ * $view/$timeFrom и т.п., поэтому читает $_GET напрямую.
+ */
+function viewQuerySelf(array $overrides = []): string {
+    $params = array_merge([
+        'view' => $_GET['view'] ?? 'pf',
+        'from' => $_GET['from'] ?? '',
+        'to' => $_GET['to'] ?? '',
+        'search' => $_GET['search'] ?? '',
+        'minrisk' => $_GET['minrisk'] ?? '',
+        'page' => $_GET['page'] ?? '',
+    ], $overrides);
+    $params = array_filter($params, static fn($v) => $v !== '' && $v !== null);
+    return basename(__FILE__) . '?' . http_build_query($params);
 }
 
 $verdictLabels = [
@@ -833,10 +1074,13 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
 <header class="header">
     <div>
         <h1>🛡 AntiBot Analyzer <span style="color:#60a5fa">v3</span></h1>
-        <div class="sub">Поведенческий анализ посетителей: прошёл CAPTCHA ≠ хороший посетитель.</div>
+        <div class="sub">Поведенческий анализ <b>только посетителей, прошедших CAPTCHA</b> — кандидатов на накрутку поведенческих факторов.</div>
     </div>
     <div class="sub" style="text-align:right">
         Лог: <b><?= h(basename($logFile)) ?></b> · <?= h($fileSizeMb) ?> MB · <?= h($lastModified) ?><br>
+        <?php if (!empty($stats['raySessionsTotal'])): ?>
+            Капчу прошли: <b><?= fmtInt($stats['raySessionsPassed'] ?? 0) ?></b> из <?= fmtInt($stats['raySessionsTotal']) ?> (остальное исключено из анализа)<br>
+        <?php endif; ?>
         <?php if (!empty($fromCache)): ?>
             данные из кэша <a href="<?= h(viewQuery(['fresh' => 1])) ?>">обновить принудительно</a>
         <?php elseif ($parseMs !== null): ?>
@@ -870,15 +1114,12 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
     <div class="stat"><b><?= fmtInt($stats['fps'] ?? 0) ?></b><span>Fingerprint</span></div>
 </div>
 
-<!-- Tabs: навигация вынесена ПЕРЕД графиками, чтобы переключение разделов было доступно сразу -->
+<!-- Tabs: только вкладки посетителей, ПРОШЕДШИХ CAPTCHA (вкладки «CAPTCHA не завершена», «Хорошие посетители» и «Поисковые боты» удалены — непрошедшие проверка из анализа исключены полностью) -->
 <div class="tabs">
     <a class="tab pf <?= $view==='pf'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'pf','page'=>''])) ?>">🎯 Накрутка ПФ (<?= (int)($stats['pfEntities']??0) ?>)</a>
     <a class="tab <?= $view==='risk'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'risk','page'=>''])) ?>">🔴 Плохие визитеры (<?= (int)(($stats['riskBlock']??0)+($stats['riskSuspect']??0)) ?>)</a>
     <a class="tab <?= $view==='blocked'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'blocked','page'=>''])) ?>">⛔ Заблокированы (<?= (int)($stats['blocked']??0) ?>)</a>
-    <a class="tab <?= $view==='pending'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'pending','page'=>''])) ?>">🟡 CAPTCHA не завершена</a>
-    <a class="tab <?= $view==='passed'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'passed','page'=>''])) ?>">🟢 Хорошие посетители</a>
-    <a class="tab <?= $view==='robots'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'robots','page'=>''])) ?>">🤖 Поисковые боты (<?= (int)($stats['robots']??0) ?>)</a>
-    <a class="tab <?= $view==='all'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'all','page'=>''])) ?>">📋 Все</a>
+    <a class="tab <?= $view==='all'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'all','page'=>''])) ?>">📋 Все прошедшие CAPTCHA</a>
 </div>
 
 <!-- Charts -->
@@ -984,14 +1225,20 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
             </div>
             <?php endif; ?>
             <div class="actions">
-                <button type="button" class="history-btn camp-hist-btn" data-camp-value="<?= h($c['id']) ?>">🕓 История кампании</button>
+                <button type="button" class="history-btn camp-hist-btn" data-camp-value="<?= h($c['id']) ?>"
+                    data-camp-ips='<?= h(json_encode(array_slice($c['ips'], 0, 15))) ?>'>🕓 История кампании</button>
                 <?php if (analyzerActionAuthorized()): ?>
-                    <?php foreach (array_slice($c['ips'],0,10) as $cip): ?>
-                        <form method="post"><input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>"><input type="hidden" name="analyzer_action" value="ip"><input type="hidden" name="ip" value="<?= h($cip) ?>"><button class="action ip-action" type="submit" title="Бан <?= h($cip) ?>">🚫 <?= h(explode('.', $cip)[0] !== '' && filter_var($cip, FILTER_VALIDATE_IP) ? (strlen($cip)>15?substr($cip,0,12).'…':$cip) : $cip) ?></button></form>
-                    <?php endforeach; ?>
-                    <?php foreach ($c['fingerprints'] as $cfp): ?>
-                        <form method="post"><input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>"><input type="hidden" name="analyzer_action" value="fingerprint"><input type="hidden" name="fingerprint" value="<?= h($cfp) ?>"><button class="action fp-action" type="submit" title="Бан FP <?= h($cfp) ?>">🚫 FP</button></form>
-                    <?php endforeach; ?>
+                <!-- ОДНА кнопка на кампанию: банит ВСЕ IP и FP пула разом.
+                   Индивидуальные формы «🚫 <ip>» / «🚫 FP» удалены: они банили
+                   по одному значению из среза и создавали иллюзию работы. -->
+                <form method="post" onsubmit="return confirm('Заблокировать кампанию ЦЕЛИКОМ: <?= (int)($c['ipsCount'] ?? count($c['ips'])) ?> IP и <?= (int)($c['fpCount'] ?? count($c['fingerprints'])) ?> FP?');">
+                    <input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>">
+                    <input type="hidden" name="analyzer_action" value="campaign">
+                    <input type="hidden" name="campaign_id" value="<?= h($c['id']) ?>">
+                    <input type="hidden" name="pool_ips" value="<?= h(implode("\n", $c['ips'])) ?>">
+                    <input type="hidden" name="pool_fps" value="<?= h(implode("\n", $c['fingerprints'])) ?>">
+                    <button class="action both-action" type="submit">🚫 Заблокировать кампанию целиком (<?= (int)($c['ipsCount'] ?? count($c['ips'])) ?> IP + <?= (int)($c['fpCount'] ?? count($c['fingerprints'])) ?> FP)</button>
+                </form>
                 <?php endif; ?>
             </div>
             <div class="history-panel"></div>
@@ -1002,36 +1249,13 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
 </div>
 <?php endif; ?>
 
-
-<?php if ($view === 'robots'): ?>
-    <div class="panel">
-        <h2>🤖 Индексирующие боты</h2>
-        <div class="hint">Легальные поисковые роботы — они не попадают в списки блокировки.</div>
-        <?php if (!$robotSessions): ?><div class="empty">Индексирующих ботов не найдено.</div><?php else: ?>
-        <div class="cards">
-            <?php foreach (array_slice($robotSessions,0,60) as $s): ?>
-            <article class="entity-card">
-                <span class="badge blue"><?= h($s['robotName'] ?: 'Индексирующий бот') ?></span>
-                <div class="entity-value"><?= h($s['ip']) ?></div>
-                <div class="facts">
-                    <div><b>Запросов</b><span><?= (int)$s['requestCount'] ?></span></div>
-                    <div><b>URL</b><span><?= count($s['urls']) ?></span></div>
-                    <div><b>Последний</b><span style="font-size:10px"><?= h(substr((string)$s['lastSeen'],5,11)) ?></span></div>
-                </div>
-            </article>
-            <?php endforeach; ?>
-        </div><?php endif; ?>
-    </div>
-<?php else: ?>
     <div class="panel">
         <h2><?php
             echo match($view) {
                 'pf' => '🎯 Накрутка поведенческих факторов (Яндекс.Метрика)',
                 'risk' => '🔴 Плохие визитеры — рекомендуются к блокировке',
                 'blocked' => '⛔ Уже заблокированы',
-                'pending' => '🟡 CAPTCHA показана, но не завершена',
-                'passed' => '🟢 Посетители, прошедшие проверку без аномалий',
-                default => '📋 Все сущности',
+                default => '📋 Все посетители, прошедшие CAPTCHA',
             };
         ?></h2>
         <div class="hint">
@@ -1039,8 +1263,6 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
                 Оценка строится на <b>поведении после</b> прохождения CAPTCHA: повторы одной страницы (в т.ч. ежедневно), машинная периодичность интервалов, мгновенные решения капчи, ротация IP у одного отпечатка. Порог показа: риск ≥ <?= (int)$minRisk ?>.
             <?php elseif ($view === 'pf'): ?>
                 <b>Накрутка поведенческих факторов</b> — посетители, которые проходят CAPTCHA, но затем монотонно набивают один и тот же URL (часто из выдачи Яндекса, <code>ysclid</code>/<code>utm_referrer</code>), в том числе ежедневно. Это напрямую ухудшает ранжирование в Яндексе. Фиолетовые карточки — участники объединённых <b>кампаний</b> (пулы прокси с одним отпечатком). Кнопка «🎯 Кампания» открывает историю всех IP/FP группы.
-            <?php elseif ($view === 'pending'): ?>
-                Один незавершённый показ CAPTCHA — не основание для блокировки: пользователь мог закрыть страницу. Но систематические незавершённые проверки — сигнал.
             <?php endif; ?>
             Всего в выборке: <b><?= fmtInt($totalItems) ?></b> · страница <?= (int)$page ?> из <?= (int)$totalPages ?>.
         </div>
@@ -1143,7 +1365,18 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
                 <button type="button" class="history-btn">🕓 История</button>
                 <?php if ($campId !== '' && isset($campaignsById[$campId])): $cc = $campaignsById[$campId]; ?>
                     <button type="button" class="history-btn camp-hist-btn" data-camp-value="<?= h($campId) ?>"
-                        data-camp-ips='<?= h(json_encode(array_slice($cc['ips'], 0, 15))) ?>'>🎯 Кампания</button>
+                        data-camp-ips='<?= h(json_encode(array_slice($cc['ips'], 0, 15))) ?>'>🕓 История кампании</button>
+                    <?php if (analyzerActionAuthorized()): ?>
+                    <!-- Одна кнопка на всю кампанию: передаёт ПОЛНЫЙ пул IP+FP (без срезов) -->
+                    <form method="post" onsubmit="return confirm('Заблокировать кампанию ЦЕЛИКОМ: <?= (int)($cc['ipsCount'] ?? count($cc['ips'])) ?> IP и <?= (int)($cc['fpCount'] ?? count($cc['fingerprints'])) ?> FP?');">
+                        <input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>">
+                        <input type="hidden" name="analyzer_action" value="campaign">
+                        <input type="hidden" name="campaign_id" value="<?= h($campId) ?>">
+                        <input type="hidden" name="pool_ips" value="<?= h(implode("\n", $cc['ips'])) ?>">
+                        <input type="hidden" name="pool_fps" value="<?= h(implode("\n", $cc['fingerprints'])) ?>">
+                        <button class="action both-action" type="submit">🚫 Заблокировать кампанию целиком (<?= (int)($cc['ipsCount'] ?? count($cc['ips'])) ?> IP + <?= (int)($cc['fpCount'] ?? count($cc['fingerprints'])) ?> FP)</button>
+                    </form>
+                    <?php endif; ?>
                 <?php endif; ?>
                 <button class="copy" data-copy="<?= h($item['value']) ?>">Копировать</button>
                 <?php if (analyzerActionAuthorized()): ?>
@@ -1216,7 +1449,6 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
         <?php endif; ?>
         <?php endif; ?>
     </div>
-<?php endif; ?>
 
 <div class="panel">
     <h2>ℹ️ Как читать результат</h2>
@@ -1488,7 +1720,7 @@ document.addEventListener('click',async e=>{
     const host=cbtn.closest('.entity-card')||cbtn.closest('.camp-card');
     const panel=host.querySelector('.history-panel');
     panel.classList.toggle('open');
-    cbtn.textContent=panel.classList.contains('open')?'🕓 Скрыть':'🎯 Кампания';
+    cbtn.textContent=panel.classList.contains('open')?'🕓 Скрыть историю':'🕓 История кампании';
     if(!panel.classList.contains('open')||panel.dataset.loaded==='1')return;
     panel.innerHTML='<div class="history-loading">Загрузка истории кампании…</div>';
     try{
