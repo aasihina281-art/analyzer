@@ -35,7 +35,7 @@ require_once __DIR__ . '/includes/pf-detector.php';
 
 /* Версия схемы кэшируемых данных. При изменении структуры сущностей /
  * кампаний / графиков нужно увеличить — старый кэш будет инвалидирован. */
-const ANALYZER_SCHEMA_VERSION = 12; // 12 — фильтр «только прошедшие CAPTCHA», рабочая блокировка кампаний, чистка UI
+const ANALYZER_SCHEMA_VERSION = 13; // 13 — сверка статуса блока с актуальными blacklist-файлами (разблокировка больше не «застревает»)
 
 /* ------------------------------------------------------------------ *
  * Blocking actions (unchanged security model)
@@ -197,13 +197,94 @@ function analyzerPerformBlock(string $logFile, array $ips, array $fps): array {
     $added = array_sum(array_map(fn($r) => !empty($r['added']) ? 1 : 0, $results));
     $failed = array_filter($results, fn($r) => empty($r['ok']));
 
+    // Итоговое состояние пула: значение «в блоке», если оно было добавлено
+    // сейчас ИЛИ уже находилось в blacklist. Используется для разблокировки
+    // кампании целиком — снимается ровно тот набор, который показан на карточке.
+    $inBlacklist = ['ips' => [], 'fps' => []];
+    foreach ($results as $r) {
+        if (empty($r['ok'])) continue;
+        if ($r['target'] === 'IP') $inBlacklist['ips'][] = (string)$r['value'];
+        else $inBlacklist['fps'][] = (string)$r['value'];
+    }
+
     return [
         'ok' => empty($failed),
         'added' => $added,
         'results' => $results,
+        'inBlacklist' => $inBlacklist,
         'message' => empty($failed)
             ? ($added > 0 ? 'Блокировка применена.' : 'Все выбранные значения уже были в blacklist.')
             : 'Не все действия выполнены.',
+    ];
+}
+
+/**
+ * Разблокировать набор IP + FP одним проходом по файлам списков.
+ * Возвращает количество удалённых записей каждого типа.
+ *
+ * @return array{ok:bool,removedIps:int,removedFps:int,message:string}
+ */
+function analyzerPerformUnblock(string $logFile, array $ips, array $fps): array {
+    $removedIps = 0;
+    $removedFps = 0;
+    $errors = [];
+
+    $jobs = [
+        ['ip', 'blacklist_ip', $ips],
+        ['fp', 'blacklist_fingerprint', $fps],
+    ];
+
+    foreach ($jobs as [$kind, $listName, $values]) {
+        $values = array_values(array_unique(array_filter(array_map(
+            static fn($v) => strtolower(trim((string)$v)),
+            $values
+        ), static fn($v) => $v !== '')));
+        if ($values === []) continue;
+
+        $path = analyzerFindOrCreateList($logFile, $listName);
+        if ($path === null || !is_writable($path)) {
+            $errors[] = 'Файл ' . $listName . ' недоступен для записи.';
+            continue;
+        }
+
+        $handle = fopen($path, 'c+');
+        if (!$handle) { $errors[] = 'Не удалось открыть ' . $listName . '.'; continue; }
+        try {
+            if (!flock($handle, LOCK_EX)) { $errors[] = 'Не удалось получить блокировку файла ' . $listName . '.'; continue; }
+            rewind($handle);
+            $content = (string)stream_get_contents($handle);
+            $wanted = array_flip($values);
+            $out = [];
+            $found = 0;
+            foreach (preg_split('/\R/', $content) ?: [] as $line) {
+                $lv = trim((string)preg_replace('/#.*$/', '', (string)$line));
+                if ($lv !== '' && isset($wanted[$lv])) { $found++; continue; } // удаляем строку
+                $out[] = $line;
+            }
+            if ($found > 0) {
+                $newContent = implode(PHP_EOL, $out) . PHP_EOL;
+                ftruncate($handle, 0);
+                rewind($handle);
+                fwrite($handle, $newContent);
+                fflush($handle);
+            }
+            flock($handle, LOCK_UN);
+            if ($kind === 'ip') $removedIps += $found; else $removedFps += $found;
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    $total = $removedIps + $removedFps;
+    return [
+        'ok' => $errors === [],
+        'removedIps' => $removedIps,
+        'removedFps' => $removedFps,
+        'message' => $errors !== []
+            ? implode(' ', $errors)
+            : ($total > 0
+                ? sprintf('Разблокировано: %d IP и %d FP.', $removedIps, $removedFps)
+                : 'Ни одной записи не найдено в blacklist — статус уже актуален.'),
     ];
 }
 
@@ -331,7 +412,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                     $out = [];
                     foreach ($lines as $line) {
                         $lv = trim((string)preg_replace('/#.*$/', '', (string)$line));
-                        if ($lv !== '' && $lv === $value) { $removed = true; continue; } // выбрасываем эту строку
+                        // FP-записи сравниваются регистронезависимо: в файле запись
+                        // может быть в верхнем регистре, а карточка отдаёт нижний.
+                        if ($lv !== '' && ($lv === $value || (!$isIp && strcasecmp($lv, $value) === 0))) { $removed = true; continue; } // выбрасываем эту строку
                         $out[] = $line;
                     }
                     if ($removed) {
@@ -340,10 +423,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                 }
                 $actionMessage = $removed
                     ? ($isIp ? "IP {$value} удалён из blacklist." : "Fingerprint {$value} удалён из blacklist.")
-                    : 'Запись не найдена или файл списка недоступен для записи.';
+                    : 'Запись не найдена в blacklist — статус и так актуален (или файл списка недоступен для записи).';
                 $actionError = !$removed;
-                if ($removed) analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+                // Инвалидация кэша обязательна ВСЕГДА: даже если запись удалил
+                // кто-то вручную (вне интерфейса), счётчики и вкладки должны
+                // пересчитаться от актуальных файлов списков.
+                analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
             }
+        } elseif ($action === 'unblock_campaign') {
+            /* ---------- РАЗБЛОКИРОВКА КАМПАНИИ ЦЕЛИКОМ ----------
+               Снимает с блокировки весь пул IP+FP карточки одним действием.
+               Раньше такой кнопки не было вовсе: после бана кампании её нельзя
+               было откатить, не удаляя десятки записей по одной. */
+            $rawIps = preg_split('/[\r\n,;\s]+/', (string)($_POST['pool_ips'] ?? '')) ?: [];
+            $rawFps = preg_split('/[\r\n,;\s]+/', (string)($_POST['pool_fps'] ?? '')) ?: [];
+            $rawIps = array_values(array_filter(array_map('trim', $rawIps), static fn($v) => $v !== ''));
+            $rawFps = array_values(array_filter(array_map('trim', $rawFps), static fn($v) => $v !== ''));
+            if ($rawIps === [] && $rawFps === []) {
+                $actionMessage = 'Пул кампании пуст. Обновите страницу и повторите действие.';
+                $actionError = true;
+            } else {
+                $result = analyzerPerformUnblock($logFile, $rawIps, $rawFps);
+                $actionMessage = $result['message'];
+                $actionError = !$result['ok'] && ($result['removedIps'] + $result['removedFps']) === 0;
+                analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+            }
+        } elseif ($action === 'sync_blacklists') {
+            /* ---------- ПРИНУДИТЕЛЬНАЯ СВЕРКА С ЧЁРНЫМИ СПИСКАМИ ----------
+               Пересобирает анализ заново: статус «заблокирован» берётся ИСКЛЮЧИТЕЛЬНО
+               из текущего содержимого blacklist_ip / blacklist_fingerprint.
+               Помогает, если списки правили руками/внешней системой. */
+            analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+            header('Location: ' . viewQuerySelf(['fresh' => 1]));
+            exit;
         } elseif ($action === 'ip' || $action === 'fingerprint' || $action === 'both') {
             /* ---------- ОДИНОЧНАЯ БЛОКИРОВКА (IP / FP / FP+IP) ----------
                Валидация обеих частей выполняется ДО записи: раньше невалидный
@@ -361,8 +473,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                 }
                 $actionMessage .= ' ' . implode(' · ', $parts);
             }
-            // Invalidate analytics cache (blacklist membership affects verdicts)
-            if (!empty($result['added'])) analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+            // Инвалидация кэша обязательна ВСЕГДА (не только при added>0):
+            // blacklist-флаги применяются поверх кэша, но счётчики/графики
+            // должны пересчитываться после любого изменения списков.
+            analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
         } elseif ($action === 'campaign' || $action === 'campaign_pool') {
             /* ---------- БЛОКИРОВКА ВСЕЙ КАМПАНИИ ПФ (объединённый пул IP + FP) ----------
                POST приходит на ещё не выполненный анализ, поэтому кампаний в
@@ -598,17 +712,40 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
 }
 
 /* ------------------------------------------------------------------ *
- * Blacklist-флаги применяются ВСЕГДА (и после загрузки из кэша тоже).
- * Иначе список «⛔ Заблокированы» зависит от момента записи кэша, а не
- * от текущего содержимого blacklist_ip / blacklist_fingerprint.
+ * СВЕРКА СО СПИСКАМИ (выполняется ВСЕГДА — и для кэша, и для свежего
+ * разбора). Единственный источник истины о статусе блока — актуальное
+ * содержимое файлов blacklist_ip / blacklist_fingerprint.
+ *
+ * 1) Значение есть в файле   => inBlacklist=true, вердикт 'blocked'.
+ * 2) Значения НЕТ в файле    => inBlacklist=false, вердикт пересобирается
+ *    из поведенческого скоринга (pf_campaign/block/suspect/watch/ok).
+ *    Раньше здесь была дыра: сущности «застревали» заблокированными, если
+ *    строку удалили из blacklist вручную или через «Разблокировать», а
+ *    кэш и лог-флаги ('blocked' из строк лога) продолжали показывать блок.
  * ------------------------------------------------------------------ */
 foreach (['ip', 'fp'] as $__type) {
     foreach ($entities[$__type] as $__key => $__e) {
         $__inBl = ($__type === 'ip' && isset($blackIps[(string)$__key]))
-               || ($__type === 'fp' && isset($blackFps[(string)$__key]));
+               || ($__type === 'fp' && isset($blackFps[strtolower((string)$__key)]));
+
         if ($__inBl) {
             $entities[$__type][$__key]['inBlacklist'] = true;
             $entities[$__type][$__key]['riskVerdict'] = 'blocked'; // факт блока сильнее скоринга
+            continue;
+        }
+
+        // В blacklist значения нет — снимаем любой «застрявший» статус блока.
+        if (!empty($__e['inBlacklist']) || ($__e['riskVerdict'] ?? '') === 'blocked') {
+            $entities[$__type][$__key]['inBlacklist'] = false;
+            $entities[$__type][$__key]['logBlacklistIp'] = false;
+            $entities[$__type][$__key]['logBlacklistFp'] = false;
+            // Поведенческий вердикт: сначала ПФ-кампания, затем порог риска.
+            $__verdict = !empty($__e['isPFCampaign'])
+                ? 'pf_campaign'
+                : ((int)($__e['riskScore'] ?? 0) >= 60 ? 'block'
+                    : ((int)($__e['riskScore'] ?? 0) >= 40 ? 'suspect'
+                        : ((int)($__e['riskScore'] ?? 0) >= 20 ? 'watch' : 'ok')));
+            $entities[$__type][$__key]['riskVerdict'] = $__verdict;
         }
     }
 }
@@ -707,6 +844,24 @@ function viewQuery(array $overrides = []): string {
     ], $overrides);
     $params = array_filter($params, static fn($v) => $v !== '' && $v !== null);
     return '?' . http_build_query($params);
+}
+
+/**
+ * URL текущей страницы GET-параметрами с оверрайдами. Используется
+ * POST-обработчиком (action=sync_blacklists) — вызывается ДО определения
+ * $view/$timeFrom и т.п., поэтому читает $_GET напрямую.
+ */
+function viewQuerySelf(array $overrides = []): string {
+    $params = array_merge([
+        'view' => $_GET['view'] ?? 'pf',
+        'from' => $_GET['from'] ?? '',
+        'to' => $_GET['to'] ?? '',
+        'search' => $_GET['search'] ?? '',
+        'minrisk' => $_GET['minrisk'] ?? '',
+        'page' => $_GET['page'] ?? '',
+    ], $overrides);
+    $params = array_filter($params, static fn($v) => $v !== '' && $v !== null);
+    return basename(__FILE__) . '?' . http_build_query($params);
 }
 
 $verdictLabels = [
