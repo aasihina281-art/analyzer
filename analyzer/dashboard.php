@@ -35,7 +35,7 @@ require_once __DIR__ . '/includes/pf-detector.php';
 
 /* Версия схемы кэшируемых данных. При изменении структуры сущностей /
  * кампаний / графиков нужно увеличить — старый кэш будет инвалидирован. */
-const ANALYZER_SCHEMA_VERSION = 11; // 11 — анализатор учитывает ТОЛЬКО посетителей, прошедших CAPTCHA
+const ANALYZER_SCHEMA_VERSION = 12; // 12 — фильтр «только прошедшие CAPTCHA», рабочая блокировка кампаний, чистка UI
 
 /* ------------------------------------------------------------------ *
  * Blocking actions (unchanged security model)
@@ -53,7 +53,9 @@ function analyzerActionToken(): string {
 }
 
 function analyzerValidateIP(string $ip): bool {
-    return filter_var($ip, FILTER_VALIDATE_IP) !== false;
+    // В пулах кампаний встречаются записи вида "134.122.40.0/24" (CIDR) или
+    // с портом — допускаем только чистые IPv4/IPv6 без суффиксов.
+    return filter_var(trim($ip), FILTER_VALIDATE_IP) !== false;
 }
 
 function analyzerValidateFingerprint(string $fp): bool {
@@ -145,24 +147,47 @@ function analyzerReadBlacklist(string $logFile, string $listName): array {
     return $set;
 }
 
-function analyzerPerformBlock(string $logFile, string $action, string $ip, string $fp): array {
-    if (!in_array($action, ['ip', 'fingerprint', 'both'], true)) {
-        return ['ok' => false, 'message' => 'Неизвестное действие блокировки.'];
-    }
-    $results = [];
-    $comment = 'Added from AntiBot Analyzer (behavioral risk)';
+/**
+ * Выполнить блокировку по списку значений с ПОЛНОЙ проверкой каждого элемента.
+ *
+ * Раньше при действии 'both' невалидный FP приводил к раннему возврату —
+ * IP-часть при этом НЕ записывалась, и кнопка «🚫 FP + IP» выглядела
+ * сломанной. Теперь все значения валидируются заранее: если хоть одно
+ * некорректно — блокировка не выполняется вообще (атомарность), пользователь
+ * получает точный список проблемных значений.
+ */
+function analyzerPerformBlock(string $logFile, array $ips, array $fps): array {
+    $comment = 'Added from AntiBot Analyzer (behavioral risk / PF campaign)';
 
-    if ($action === 'ip' || $action === 'both') {
-        if (!analyzerValidateIP($ip)) return ['ok' => false, 'message' => 'Некорректный IP-адрес.'];
-        $path = analyzerFindOrCreateList($logFile, 'blacklist_ip');
-        if ($path === null) return ['ok' => false, 'message' => 'Не найден или недоступен lists/blacklist_ip.'];
-        $results[] = ['target' => 'IP', 'value' => $ip] + analyzerAddToList($path, $ip, $comment);
+    // --- Валидация ВСЕХ значений до записи (без раннего возврата по части) ---
+    $invalid = [];
+    foreach ($ips as $ip) {
+        $ip = trim((string)$ip);
+        if ($ip === '' || !analyzerValidateIP($ip)) $invalid[] = 'IP: ' . ($ip !== '' ? $ip : '(пусто)');
     }
-    if ($action === 'fingerprint' || $action === 'both') {
-        if (!analyzerValidateFingerprint($fp)) return ['ok' => false, 'message' => 'Некорректный Fingerprint.'];
-        $path = analyzerFindOrCreateList($logFile, 'blacklist_fingerprint');
-        if ($path === null) return ['ok' => false, 'message' => 'Не найден или недоступен lists/blacklist_fingerprint.'];
-        $results[] = ['target' => 'Fingerprint', 'value' => $fp] + analyzerAddToList($path, $fp, $comment);
+    foreach ($fps as $fp) {
+        $fp = strtolower(trim((string)$fp));
+        if ($fp === '' || !analyzerValidateFingerprint($fp)) $invalid[] = 'FP: ' . ($fp !== '' ? substr($fp, 0, 24) . '…' : '(пусто)');
+    }
+    if ($invalid !== []) {
+        return ['ok' => false, 'added' => 0, 'results' => [],
+                'message' => 'Некорректные значения — блокировка отменена: ' . implode(', ', array_slice($invalid, 0, 5))];
+    }
+    if ($ips === [] && $fps === []) {
+        return ['ok' => false, 'added' => 0, 'results' => [], 'message' => 'Нечего блокировать: список пуст.'];
+    }
+
+    $ipPath = $ips ? analyzerFindOrCreateList($logFile, 'blacklist_ip') : null;
+    $fpPath = $fps ? analyzerFindOrCreateList($logFile, 'blacklist_fingerprint') : null;
+    if ($ips && $ipPath === null) return ['ok' => false, 'added' => 0, 'results' => [], 'message' => 'Не найден или недоступен для записи lists/blacklist_ip.'];
+    if ($fps && $fpPath === null) return ['ok' => false, 'added' => 0, 'results' => [], 'message' => 'Не найден или недоступен для записи lists/blacklist_fingerprint.'];
+
+    $results = [];
+    foreach ($ips as $ip) {
+        $results[] = ['target' => 'IP', 'value' => $ip] + analyzerAddToList($ipPath, $ip, $comment);
+    }
+    foreach ($fps as $fp) {
+        $results[] = ['target' => 'Fingerprint', 'value' => $fp] + analyzerAddToList($fpPath, $fp, $comment);
     }
 
     $added = array_sum(array_map(fn($r) => !empty($r['added']) ? 1 : 0, $results));
@@ -176,6 +201,28 @@ function analyzerPerformBlock(string $logFile, string $action, string $ip, strin
             ? ($added > 0 ? 'Блокировка применена.' : 'Все выбранные значения уже были в blacklist.')
             : 'Не все действия выполнены.',
     ];
+}
+
+/**
+ * Собрать полный пул IP + FP кампании из актуальных данных (не из среза карточки).
+ * Используется POST-обработчиком action=campaign: раньше кнопка банила только
+ * первые 10 IP и молча пропускала остальные, из-за чего «блокировка кампании»
+ * казалась неработающей.
+ */
+function analyzerCampaignPool(?array $campaign): array {
+    $ips = [];
+    $fps = [];
+    if (is_array($campaign)) {
+        foreach ((array)($campaign['ips'] ?? []) as $ip) {
+            $ip = trim((string)$ip);
+            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) !== false) $ips[$ip] = true;
+        }
+        foreach ((array)($campaign['fingerprints'] ?? []) as $fp) {
+            $fp = strtolower(trim((string)$fp));
+            if ($fp !== '' && preg_match('/^[a-f0-9]{16,128}$/', $fp) === 1) $fps[$fp] = true;
+        }
+    }
+    return ['ips' => array_keys($ips), 'fps' => array_keys($fps)];
 }
 
 /* ------------------------------------------------------------------ *
@@ -293,8 +340,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                 $actionError = !$removed;
                 if ($removed) analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
             }
-        } else {
-            $result = analyzerPerformBlock($logFile, $action, $ip, $fp);
+        } elseif ($action === 'ip' || $action === 'fingerprint' || $action === 'both') {
+            /* ---------- ОДИНОЧНАЯ БЛОКИРОВКА (IP / FP / FP+IP) ----------
+               Валидация обеих частей выполняется ДО записи: раньше невалидный
+               FP обрывал обработку и IP-часть молча не блокировалась. */
+            $ips = ($action === 'ip' || $action === 'both') && $ip !== '' ? [$ip] : [];
+            $fps = ($action === 'fingerprint' || $action === 'both') && $fp !== '' ? [$fp] : [];
+            $result = analyzerPerformBlock($logFile, $ips, $fps);
             $actionMessage = $result['message'] ?? 'Готово.';
             $actionError = empty($result['ok']);
 
@@ -306,7 +358,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                 $actionMessage .= ' ' . implode(' · ', $parts);
             }
             // Invalidate analytics cache (blacklist membership affects verdicts)
-            analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+            if (!empty($result['added'])) analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+        } elseif ($action === 'campaign' || $action === 'campaign_pool') {
+            /* ---------- БЛОКИРОВКА ВСЕЙ КАМПАНИИ ПФ (объединённый пул IP + FP) ----------
+               POST приходит на ещё не выполненный анализ, поэтому кампаний в
+               памяти пока нет. Надёжный источник — сам отправленный пул: форма
+               карточки кампании всегда содержит ПОЛНЫЕ списки IP и FP (без
+               среза «первые 10», из-за которого блокировка выглядела неработающей). */
+            $pool = null;
+            $rawIps = preg_split('/[\\r\\n,;\\s]+/', (string)($_POST['pool_ips'] ?? '')) ?: [];
+            $rawFps = preg_split('/[\\r\\n,;\\s]+/', (string)($_POST['pool_fps'] ?? '')) ?: [];
+            $rawIps = array_values(array_filter(array_map('trim', $rawIps), static fn($v) => $v !== ''));
+            $rawFps = array_values(array_filter(array_map('trim', $rawFps), static fn($v) => $v !== ''));
+            if ($rawIps !== [] || $rawFps !== []) {
+                $pool = ['ips' => $rawIps, 'fingerprints' => $rawFps];
+            }
+
+            if ($pool === null) {
+                $actionMessage = 'Пул кампании пуст или устарел. Обновите страницу и повторите блокировку.';
+                $actionError = true;
+            } else {
+                $clean = analyzerCampaignPool($pool);
+                $result = analyzerPerformBlock($logFile, $clean['ips'], $clean['fps']);
+                $addedIp = 0; $addedFp = 0;
+                foreach ((array)($result['results'] ?? []) as $item) {
+                    if (empty($item['added'])) continue;
+                    if ($item['target'] === 'IP') $addedIp++; else $addedFp++;
+                }
+                $actionMessage = $result['ok']
+                    ? sprintf('Кампания заблокирована целиком: %d IP и %d FP добавлены в blacklist.', $addedIp, $addedFp)
+                    : (string)$result['message'];
+                $actionError = empty($result['ok']);
+                if (!empty($result['added'])) analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+            }
+        } else {
+            $actionMessage = 'Неизвестное действие блокировки.';
+            $actionError = true;
         }
     }
 }
@@ -320,7 +407,7 @@ $timeTo     = isset($_GET['to']) ? trim((string)$_GET['to']) : '';
 $searchTerm = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
 $view       = (string)($_GET['view'] ?? 'pf');
 if (!in_array($view, ['pf', 'risk', 'blocked', 'all'], true)) $view = 'pf';
-$minRisk    = max(0, min(100, (int)($_GET['minrisk'] ?? 40)));
+$minRisk    = max(0, min(100, (int)($_GET['minrisk'] ?? 0))); // по умолчанию 0: фильтр показывает все сущности
 $page       = max(1, (int)($_GET['page'] ?? 1));
 $perPage    = 30;
 $nocache    = !empty($_GET['fresh']);
@@ -610,7 +697,7 @@ function viewQuery(array $overrides = []): string {
         'from' => $_GET['from'] ?? '',
         'to' => $_GET['to'] ?? '',
         'search' => $_GET['search'] ?? '',
-        'minrisk' => $_GET['minrisk'] ?? '40',
+        'minrisk' => $_GET['minrisk'] ?? '',
     ], $overrides);
     $params = array_filter($params, static fn($v) => $v !== '' && $v !== null);
     return '?' . http_build_query($params);
