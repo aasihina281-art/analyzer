@@ -59,7 +59,9 @@ function analyzerValidateIP(string $ip): bool {
 }
 
 function analyzerValidateFingerprint(string $fp): bool {
-    return (bool)preg_match('/^[a-f0-9]{16,128}$/i', $fp);
+    // Отпечаток в antibot.log — hex-строка от 16 до 128 символов.
+    // Регистр не важен: значение нормализуется через strtolower() перед записью.
+    return (bool)preg_match('/^[a-f0-9]{16,128}$/i', trim($fp));
 }
 
 function analyzerListCandidates(string $logFile, string $listName): array {
@@ -184,9 +186,11 @@ function analyzerPerformBlock(string $logFile, array $ips, array $fps): array {
 
     $results = [];
     foreach ($ips as $ip) {
+        $ip = trim((string)$ip);
         $results[] = ['target' => 'IP', 'value' => $ip] + analyzerAddToList($ipPath, $ip, $comment);
     }
     foreach ($fps as $fp) {
+        $fp = strtolower(trim((string)$fp));
         $results[] = ['target' => 'Fingerprint', 'value' => $fp] + analyzerAddToList($fpPath, $fp, $comment);
     }
 
@@ -366,8 +370,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                карточки кампании всегда содержит ПОЛНЫЕ списки IP и FP (без
                среза «первые 10», из-за которого блокировка выглядела неработающей). */
             $pool = null;
-            $rawIps = preg_split('/[\\r\\n,;\\s]+/', (string)($_POST['pool_ips'] ?? '')) ?: [];
-            $rawFps = preg_split('/[\\r\\n,;\\s]+/', (string)($_POST['pool_fps'] ?? '')) ?: [];
+            $rawIps = preg_split('/[\r\n,;\s]+/', (string)($_POST['pool_ips'] ?? '')) ?: [];
+            $rawFps = preg_split('/[\r\n,;\s]+/', (string)($_POST['pool_fps'] ?? '')) ?: [];
             $rawIps = array_values(array_filter(array_map('trim', $rawIps), static fn($v) => $v !== ''));
             $rawFps = array_values(array_filter(array_map('trim', $rawFps), static fn($v) => $v !== ''));
             if ($rawIps !== [] || $rawFps !== []) {
@@ -389,7 +393,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
                     ? sprintf('Кампания заблокирована целиком: %d IP и %d FP добавлены в blacklist.', $addedIp, $addedFp)
                     : (string)$result['message'];
                 $actionError = empty($result['ok']);
-                if (!empty($result['added'])) analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
+                // Инвалидация кэша обязательна даже при added=0 (все значения уже
+                // в blacklist): счётчик «⛔ Заблокированы» в кэше мог устареть.
+                analyzerInvalidateCache($logFile, $cacheDirForInvalidate);
             }
         } else {
             $actionMessage = 'Неизвестное действие блокировки.';
@@ -953,15 +959,12 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
     <div class="stat"><b><?= fmtInt($stats['fps'] ?? 0) ?></b><span>Fingerprint</span></div>
 </div>
 
-<!-- Tabs: навигация вынесена ПЕРЕД графиками, чтобы переключение разделов было доступно сразу -->
+<!-- Tabs: только вкладки посетителей, ПРОШЕДШИХ CAPTCHA (вкладки «CAPTCHA не завершена», «Хорошие посетители» и «Поисковые боты» удалены — непрошедшие проверка из анализа исключены полностью) -->
 <div class="tabs">
     <a class="tab pf <?= $view==='pf'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'pf','page'=>''])) ?>">🎯 Накрутка ПФ (<?= (int)($stats['pfEntities']??0) ?>)</a>
     <a class="tab <?= $view==='risk'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'risk','page'=>''])) ?>">🔴 Плохие визитеры (<?= (int)(($stats['riskBlock']??0)+($stats['riskSuspect']??0)) ?>)</a>
     <a class="tab <?= $view==='blocked'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'blocked','page'=>''])) ?>">⛔ Заблокированы (<?= (int)($stats['blocked']??0) ?>)</a>
-    <a class="tab <?= $view==='pending'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'pending','page'=>''])) ?>">🟡 CAPTCHA не завершена</a>
-    <a class="tab <?= $view==='passed'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'passed','page'=>''])) ?>">🟢 Хорошие посетители</a>
-    <a class="tab <?= $view==='robots'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'robots','page'=>''])) ?>">🤖 Поисковые боты (<?= (int)($stats['robots']??0) ?>)</a>
-    <a class="tab <?= $view==='all'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'all','page'=>''])) ?>">📋 Все</a>
+    <a class="tab <?= $view==='all'?'active':'' ?>" href="<?= h(viewQuery(['view'=>'all','page'=>''])) ?>">📋 Все прошедшие CAPTCHA</a>
 </div>
 
 <!-- Charts -->
@@ -1067,14 +1070,20 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
             </div>
             <?php endif; ?>
             <div class="actions">
-                <button type="button" class="history-btn camp-hist-btn" data-camp-value="<?= h($c['id']) ?>">🕓 История кампании</button>
+                <button type="button" class="history-btn camp-hist-btn" data-camp-value="<?= h($c['id']) ?>"
+                    data-camp-ips='<?= h(json_encode(array_slice($c['ips'], 0, 15))) ?>'>🕓 История кампании</button>
                 <?php if (analyzerActionAuthorized()): ?>
-                    <?php foreach (array_slice($c['ips'],0,10) as $cip): ?>
-                        <form method="post"><input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>"><input type="hidden" name="analyzer_action" value="ip"><input type="hidden" name="ip" value="<?= h($cip) ?>"><button class="action ip-action" type="submit" title="Бан <?= h($cip) ?>">🚫 <?= h(explode('.', $cip)[0] !== '' && filter_var($cip, FILTER_VALIDATE_IP) ? (strlen($cip)>15?substr($cip,0,12).'…':$cip) : $cip) ?></button></form>
-                    <?php endforeach; ?>
-                    <?php foreach ($c['fingerprints'] as $cfp): ?>
-                        <form method="post"><input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>"><input type="hidden" name="analyzer_action" value="fingerprint"><input type="hidden" name="fingerprint" value="<?= h($cfp) ?>"><button class="action fp-action" type="submit" title="Бан FP <?= h($cfp) ?>">🚫 FP</button></form>
-                    <?php endforeach; ?>
+                <!-- ОДНА кнопка на кампанию: банит ВСЕ IP и FP пула разом.
+                   Индивидуальные формы «🚫 <ip>» / «🚫 FP» удалены: они банили
+                   по одному значению из среза и создавали иллюзию работы. -->
+                <form method="post" onsubmit="return confirm('Заблокировать кампанию ЦЕЛИКОМ: <?= (int)($c['ipsCount'] ?? count($c['ips'])) ?> IP и <?= (int)($c['fpCount'] ?? count($c['fingerprints'])) ?> FP?');">
+                    <input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>">
+                    <input type="hidden" name="analyzer_action" value="campaign">
+                    <input type="hidden" name="campaign_id" value="<?= h($c['id']) ?>">
+                    <input type="hidden" name="pool_ips" value="<?= h(implode("\n", $c['ips'])) ?>">
+                    <input type="hidden" name="pool_fps" value="<?= h(implode("\n", $c['fingerprints'])) ?>">
+                    <button class="action both-action" type="submit">🚫 Заблокировать кампанию целиком (<?= (int)($c['ipsCount'] ?? count($c['ips'])) ?> IP + <?= (int)($c['fpCount'] ?? count($c['fingerprints'])) ?> FP)</button>
+                </form>
                 <?php endif; ?>
             </div>
             <div class="history-panel"></div>
@@ -1085,36 +1094,13 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
 </div>
 <?php endif; ?>
 
-
-<?php if ($view === 'robots'): ?>
-    <div class="panel">
-        <h2>🤖 Индексирующие боты</h2>
-        <div class="hint">Легальные поисковые роботы — они не попадают в списки блокировки.</div>
-        <?php if (!$robotSessions): ?><div class="empty">Индексирующих ботов не найдено.</div><?php else: ?>
-        <div class="cards">
-            <?php foreach (array_slice($robotSessions,0,60) as $s): ?>
-            <article class="entity-card">
-                <span class="badge blue"><?= h($s['robotName'] ?: 'Индексирующий бот') ?></span>
-                <div class="entity-value"><?= h($s['ip']) ?></div>
-                <div class="facts">
-                    <div><b>Запросов</b><span><?= (int)$s['requestCount'] ?></span></div>
-                    <div><b>URL</b><span><?= count($s['urls']) ?></span></div>
-                    <div><b>Последний</b><span style="font-size:10px"><?= h(substr((string)$s['lastSeen'],5,11)) ?></span></div>
-                </div>
-            </article>
-            <?php endforeach; ?>
-        </div><?php endif; ?>
-    </div>
-<?php else: ?>
     <div class="panel">
         <h2><?php
             echo match($view) {
                 'pf' => '🎯 Накрутка поведенческих факторов (Яндекс.Метрика)',
                 'risk' => '🔴 Плохие визитеры — рекомендуются к блокировке',
                 'blocked' => '⛔ Уже заблокированы',
-                'pending' => '🟡 CAPTCHA показана, но не завершена',
-                'passed' => '🟢 Посетители, прошедшие проверку без аномалий',
-                default => '📋 Все сущности',
+                default => '📋 Все посетители, прошедшие CAPTCHA',
             };
         ?></h2>
         <div class="hint">
@@ -1122,8 +1108,6 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
                 Оценка строится на <b>поведении после</b> прохождения CAPTCHA: повторы одной страницы (в т.ч. ежедневно), машинная периодичность интервалов, мгновенные решения капчи, ротация IP у одного отпечатка. Порог показа: риск ≥ <?= (int)$minRisk ?>.
             <?php elseif ($view === 'pf'): ?>
                 <b>Накрутка поведенческих факторов</b> — посетители, которые проходят CAPTCHA, но затем монотонно набивают один и тот же URL (часто из выдачи Яндекса, <code>ysclid</code>/<code>utm_referrer</code>), в том числе ежедневно. Это напрямую ухудшает ранжирование в Яндексе. Фиолетовые карточки — участники объединённых <b>кампаний</b> (пулы прокси с одним отпечатком). Кнопка «🎯 Кампания» открывает историю всех IP/FP группы.
-            <?php elseif ($view === 'pending'): ?>
-                Один незавершённый показ CAPTCHA — не основание для блокировки: пользователь мог закрыть страницу. Но систематические незавершённые проверки — сигнал.
             <?php endif; ?>
             Всего в выборке: <b><?= fmtInt($totalItems) ?></b> · страница <?= (int)$page ?> из <?= (int)$totalPages ?>.
         </div>
@@ -1226,7 +1210,18 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
                 <button type="button" class="history-btn">🕓 История</button>
                 <?php if ($campId !== '' && isset($campaignsById[$campId])): $cc = $campaignsById[$campId]; ?>
                     <button type="button" class="history-btn camp-hist-btn" data-camp-value="<?= h($campId) ?>"
-                        data-camp-ips='<?= h(json_encode(array_slice($cc['ips'], 0, 15))) ?>'>🎯 Кампания</button>
+                        data-camp-ips='<?= h(json_encode(array_slice($cc['ips'], 0, 15))) ?>'>🕓 История кампании</button>
+                    <?php if (analyzerActionAuthorized()): ?>
+                    <!-- Одна кнопка на всю кампанию: передаёт ПОЛНЫЙ пул IP+FP (без срезов) -->
+                    <form method="post" onsubmit="return confirm('Заблокировать кампанию ЦЕЛИКОМ: <?= (int)($cc['ipsCount'] ?? count($cc['ips'])) ?> IP и <?= (int)($cc['fpCount'] ?? count($cc['fingerprints'])) ?> FP?');">
+                        <input type="hidden" name="csrf" value="<?= h(analyzerActionToken()) ?>">
+                        <input type="hidden" name="analyzer_action" value="campaign">
+                        <input type="hidden" name="campaign_id" value="<?= h($campId) ?>">
+                        <input type="hidden" name="pool_ips" value="<?= h(implode("\n", $cc['ips'])) ?>">
+                        <input type="hidden" name="pool_fps" value="<?= h(implode("\n", $cc['fingerprints'])) ?>">
+                        <button class="action both-action" type="submit">🚫 Заблокировать кампанию целиком (<?= (int)($cc['ipsCount'] ?? count($cc['ips'])) ?> IP + <?= (int)($cc['fpCount'] ?? count($cc['fingerprints'])) ?> FP)</button>
+                    </form>
+                    <?php endif; ?>
                 <?php endif; ?>
                 <button class="copy" data-copy="<?= h($item['value']) ?>">Копировать</button>
                 <?php if (analyzerActionAuthorized()): ?>
@@ -1299,7 +1294,6 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
         <?php endif; ?>
         <?php endif; ?>
     </div>
-<?php endif; ?>
 
 <div class="panel">
     <h2>ℹ️ Как читать результат</h2>
@@ -1571,7 +1565,7 @@ document.addEventListener('click',async e=>{
     const host=cbtn.closest('.entity-card')||cbtn.closest('.camp-card');
     const panel=host.querySelector('.history-panel');
     panel.classList.toggle('open');
-    cbtn.textContent=panel.classList.contains('open')?'🕓 Скрыть':'🎯 Кампания';
+    cbtn.textContent=panel.classList.contains('open')?'🕓 Скрыть историю':'🕓 История кампании';
     if(!panel.classList.contains('open')||panel.dataset.loaded==='1')return;
     panel.innerHTML='<div class="history-loading">Загрузка истории кампании…</div>';
     try{
