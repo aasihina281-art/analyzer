@@ -399,6 +399,10 @@ final class PFCampaignDetector
                     }
                 }
                 if (!$matched) continue;
+                // Атрибуция метрик кампании — только сессиям, ПРОШЕДШИМ CAPTCHA.
+                // Накрутку ПФ считают решённые капчу боты; непрошедшие не должны
+                // попадать ни в запросы, ни в реферерные/дневные агрегаты.
+                if (empty($session['captchaPassed'])) continue;
 
                 $sessionsCount++;
                 $totalRequests += (int)($session['requestCount'] ?? 0);

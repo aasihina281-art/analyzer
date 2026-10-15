@@ -48,6 +48,11 @@ final class RiskScorer
         $entities = ['ip' => [], 'fp' => []];
 
         foreach ($sessions as $session) {
+            // ФИЛЬТР «ТОЛЬКО ПРОШЕДШИЕ CAPTCHA»: сущности для анализа накрутки ПФ
+            // стрятся ТОЛЬКО из посетителей с успешным прохождением проверки.
+            // Парсер уже отбрасывает непрошедших, но проверка здесь гарантирует,
+            // что ни один вызов (в т.ч. с «сырыми» сессиями) не вернёт лишнего.
+            if (empty($session['captchaPassed'])) continue;
             if (!empty($session['isRobot'])) continue;      // search bots are not visitors
             if (!empty($session['isWhitelisted'])) continue;
 

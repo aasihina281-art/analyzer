@@ -1,11 +1,13 @@
 <?php
 /**
- * AntiBot Analyzer v3 — behavioral visitor risk dashboard.
+ * AntiBot Analyzer v3 — behavioral risk dashboard for captcha-passed visitors.
  *
- * Key idea: passing a CAPTCHA does NOT make a visitor good. Behavioral bots
- * solve captchas too and then hammer the SAME page again and again (even
- * daily) with machine-like regularity — this hurts Yandex metrics and
- * distorts analytics. This dashboard detects such visitors by behavior:
+ * Key idea: the analyzer tracks ONLY visitors who successfully passed the
+ * CAPTCHA. Behavioral PF-inflation bots solve captchas and then hammer the
+ * SAME page again and again (even daily) with machine-like regularity — this
+ * hurts Yandex metrics and distorts analytics. Everything else (failed /
+ * abandoned captcha, index robots, whitelisted traffic) is dropped by the
+ * parser and never shown or scored here. Detection is purely behavioral:
  *
  *  - repeated hits on one URL from one FP/IP (incl. across different days)
  *  - mechanical periodicity of request intervals (low CV, exact repeats)
@@ -33,7 +35,7 @@ require_once __DIR__ . '/includes/pf-detector.php';
 
 /* Версия схемы кэшируемых данных. При изменении структуры сущностей /
  * кампаний / графиков нужно увеличить — старый кэш будет инвалидирован. */
-const ANALYZER_SCHEMA_VERSION = 10; // 10 — кампании пересчитывают запросы по уникальным исходным сессиям
+const ANALYZER_SCHEMA_VERSION = 11; // 11 — анализатор учитывает ТОЛЬКО посетителей, прошедших CAPTCHA
 
 /* ------------------------------------------------------------------ *
  * Blocking actions (unchanged security model)
@@ -316,8 +318,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['analyzer_action'])) {
 $timeFrom   = isset($_GET['from']) ? trim((string)$_GET['from']) : '';
 $timeTo     = isset($_GET['to']) ? trim((string)$_GET['to']) : '';
 $searchTerm = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
-$view       = (string)($_GET['view'] ?? 'risk');
-if (!in_array($view, ['risk', 'pf', 'blocked', 'pending', 'passed', 'robots', 'all'], true)) $view = 'risk';
+$view       = (string)($_GET['view'] ?? 'pf');
+if (!in_array($view, ['pf', 'risk', 'blocked', 'all'], true)) $view = 'pf';
 $minRisk    = max(0, min(100, (int)($_GET['minrisk'] ?? 40)));
 $page       = max(1, (int)($_GET['page'] ?? 1));
 $perPage    = 30;
@@ -386,17 +388,13 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
     }
 
 
-    // Robots / whitelist lists kept for their tabs
+    // Парсер уже оставил ТОЛЬКО посетителей, успешно прошедших CAPTCHA.
+    //Robots / whitelist tabs удалены: непрошедшие проверка из анализа исключены полностью.
     $robotSessions = [];
-    $whitelistCount = 0;
-    foreach ($sessions as $s) {
-        if (!empty($s['isRobot'])) $robotSessions[] = $s;
-        if (!empty($s['isWhitelisted'])) $whitelistCount++;
-    }
 
     /* ---------- Global chart data (single aggregation pass) ---------- */
 
-    // Timeline buckets over all requests
+    // Timeline buckets over requests of captcha-PASSED visitors only
     $bucketCounts = [];      // label => total
     $badBucketCounts = [];   // label => risky requests
 
@@ -416,7 +414,8 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
 
     // Re-walk sessions only for cheap global aggregates (already parsed arrays)
     foreach ($sessions as $s) {
-        // Общий график должен включать все HTTP-запросы, в том числе роботов.
+        // График строится по запросам ПОСЕТИТЕЛЕЙ, ПРОШЕДШИХ CAPTCHA
+        // (парсер уже отбросил всех остальных).
         $ip = $s['ip'];
         $isBad = false;
         if (isset($entities['fp'])) {
@@ -482,17 +481,15 @@ if ($cached !== null && isset($cached['entities'], $cached['charts'], $cached['s
         'passed' => $riskDist['ok'] ?? 0,
         'pfCampaigns' => count($campaigns),
         'pfEntities' => $riskDist['pf_campaign'] ?? 0,
-        'robots' => count($robotSessions),
-        'whitelist' => $whitelistCount ?? 0,
         'lines' => $parsed['meta']['lines'] ?? 0,
         'sessions' => count($parsed['sessions']),
+        // Фильтр «только прошедшие CAPTCHA»: сколько RayID-сессий отброшено
+        'raySessionsTotal' => (int)($parsed['meta']['raySessionsTotal'] ?? 0),
+        'raySessionsPassed' => (int)($parsed['meta']['raySessionsPassed'] ?? 0),
+        'raySessionsDropped' => (int)($parsed['meta']['raySessionsDropped'] ?? 0),
     ];
 
     $parseMs = round((microtime(true) - $t0) * 1000);
-
-    // Keep robots small for the tab
-    usort($robotSessions, fn($a, $b) => strcmp((string)($b['lastSeen'] ?? ''), (string)($a['lastSeen'] ?? '')));
-    $robotSessions = array_slice($robotSessions, 0, 150);
 
     // Кэшируем только полный анализ. Отфильтрованный результат не должен
     // подменять глобальную статистику для других посетителей/вкладок.
@@ -571,13 +568,9 @@ foreach (['fp', 'ip'] as $type) {
                 // Вкладка «Накрутка ПФ»: активные сущности, входящие в кампании накрутки
                 if (!empty($e['isPFCampaign']) && ($e['riskVerdict'] ?? '') !== 'blocked') $list[] = $e;
                 break;
-            case 'pending':
-                if ($e['captchaShown'] > 0 && $e['captchaPassed'] === 0 && $e['riskVerdict'] !== 'blocked') $list[] = $e;
-                break;
-            case 'passed':
-                if ($e['captchaPassed'] > 0 && $e['riskVerdict'] === 'ok') $list[] = $e;
-                break;
             case 'all':
+                // Все сущности — это все посетители, прошедшие CAPTCHA
+                // (непрошедшие исключены парсером из анализа полностью).
                 if (($e['riskVerdict'] ?? '') !== 'blocked') $list[] = $e; // блок — только на своей вкладке
                 break;
         }
@@ -613,7 +606,7 @@ function fmtInt($n): string {
 
 function viewQuery(array $overrides = []): string {
     $params = array_merge([
-        'view' => $_GET['view'] ?? 'risk',
+        'view' => $_GET['view'] ?? 'pf',
         'from' => $_GET['from'] ?? '',
         'to' => $_GET['to'] ?? '',
         'search' => $_GET['search'] ?? '',
@@ -833,10 +826,13 @@ footer{color:#64748b;font-size:11px;text-align:center;padding:12px 0 calc(12px +
 <header class="header">
     <div>
         <h1>🛡 AntiBot Analyzer <span style="color:#60a5fa">v3</span></h1>
-        <div class="sub">Поведенческий анализ посетителей: прошёл CAPTCHA ≠ хороший посетитель.</div>
+        <div class="sub">Поведенческий анализ <b>только посетителей, прошедших CAPTCHA</b> — кандидатов на накрутку поведенческих факторов.</div>
     </div>
     <div class="sub" style="text-align:right">
         Лог: <b><?= h(basename($logFile)) ?></b> · <?= h($fileSizeMb) ?> MB · <?= h($lastModified) ?><br>
+        <?php if (!empty($stats['raySessionsTotal'])): ?>
+            Капчу прошли: <b><?= fmtInt($stats['raySessionsPassed'] ?? 0) ?></b> из <?= fmtInt($stats['raySessionsTotal']) ?> (остальное исключено из анализа)<br>
+        <?php endif; ?>
         <?php if (!empty($fromCache)): ?>
             данные из кэша <a href="<?= h(viewQuery(['fresh' => 1])) ?>">обновить принудительно</a>
         <?php elseif ($parseMs !== null): ?>
